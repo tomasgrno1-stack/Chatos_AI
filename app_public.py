@@ -6,7 +6,6 @@ import pypdf
 import docx
 import pandas as pd
 import requests
-from streamlit_autorefresh import st_autorefresh
 
 # 1. Nastavenie stránky
 st.set_page_config(
@@ -15,9 +14,6 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="expanded"
 )
-# 1. Automatické obnovovanie aplikácie (každých 60 sekúnd = 60000 ms)
-# Toto posiela neviditeľný "ping", aby Streamlit cloud aplikáciu neuspal pri nečinnosti
-st_autorefresh(interval=60000, limit=None, key="polaris_keep_alive")
 
 # 2. Rýchla detekcia jazyka s krátkym timeoutom (max 1 sekunda)
 @st.cache_data(ttl=86400)
