@@ -6,6 +6,7 @@ import pypdf
 import docx
 import pandas as pd
 import requests
+from streamlit_autorefresh import st_autorefresh
 
 # 1. Nastavenie stránky
 st.set_page_config(
