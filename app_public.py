@@ -17,49 +17,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. Prihlasovací systém (Authentication)
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
-
-def login_form():
-    st.markdown("""
-        <style>
-        .login-card {
-            max-width: 420px;
-            margin: 60px auto;
-            padding: 2.5rem;
-            background-color: rgba(15, 23, 42, 0.9);
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            border-radius: 16px;
-            backdrop-filter: blur(12px);
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
-    st.markdown('<div class="login-card">', unsafe_allow_html=True)
-    st.markdown('<h2 style="text-align:center;">✨ Polaris AI</h2>', unsafe_allow_html=True)
-    st.caption("<p style='text-align:center;'>Prihlásenie do systému</p>", unsafe_allow_html=True)
-    
-    user_input = st.text_input("Používateľské meno")
-    pass_input = st.text_input("Heslo", type="password")
-    
-    if st.button("Prihlásiť sa", use_container_width=True):
-        users = st.secrets.get("credentials", {}).get("users", {})
-        if user_input in users and users[user_input]["password"] == pass_input:
-            st.session_state.authenticated = True
-            st.session_state.username = users[user_input]["name"]
-            st.rerun()
-        else:
-            st.error("Nespávne meno alebo heslo!")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-if not st.session_state.authenticated:
-    login_form()
-    st.stop()
-
-# 3. Automatický Keep-Alive pinger (24/7 chod bez uspania)
+# 2. Automatický Keep-Alive pinger (24/7 chod bez uspania)
 APP_URL = "https://polaris-ai.streamlit.app"  # Uprav podľa tvojej presnej URL
 
 def keep_alive():
@@ -74,7 +32,7 @@ if "pinger_started" not in st.session_state:
     st.session_state.pinger_started = True
     threading.Thread(target=keep_alive, daemon=True).start()
 
-# 4. Rýchla detekcia jazyka s krátkym timeoutom
+# 3. Rýchla detekcia jazyka s krátkym timeoutom
 @st.cache_data(ttl=86400)
 def ziskaj_jazyk_pouzivatela():
     try:
@@ -175,7 +133,7 @@ TEXTY = {
 
 t = TEXTY.get(jazyk_ui, TEXTY["en"])
 
-# 5. CSS Štýlovanie + RGB Efekt na hviezdy
+# 4. CSS Štýlovanie + RGB Efekt na hviezdy
 st.markdown("""
     <style>
     @keyframes rgbGlow {
@@ -288,14 +246,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 6. Načítanie API kľúča
+# 5. Načítanie API kľúča
 if "GOOGLE_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 else:
     st.error("Chýba GOOGLE_API_KEY v Secrets!")
     st.stop()
 
-# 7. Model selector
+# 6. Model selector
 @st.cache_data(ttl=86400)
 def ziskaj_dostupne_modely():
     return [
@@ -303,7 +261,7 @@ def ziskaj_dostupne_modely():
         "gemini-1.5-pro"
     ]
 
-# 8. Správa session state
+# 7. Správa session state
 if "chats" not in st.session_state:
     st.session_state.chats = {}
 
@@ -320,7 +278,7 @@ def vytvor_novy_chat():
     st.session_state.chats[nove_id] = {"title": "Polaris", "messages": []}
     st.session_state.current_chat_id = nove_id
 
-# 9. Roly asistenta
+# 8. Roly asistenta
 ROLY = {
     "Personal Assistant": """You are Polaris, a highly intelligent, expert AI assistant. 
 ALWAYS respond in the EXACT same language that the user uses to write to you (e.g., if the user writes in Slovak, respond in Slovak; if in English, respond in English, etc.). 
@@ -335,15 +293,8 @@ Provide clean, efficient, production-ready code with concise explanations and st
     "Concise Assistant": "You are Polaris. ALWAYS respond in the EXACT same language used by the user, limiting responses to a maximum of 2-3 short sentences."
 }
 
-# 10. Bočný panel (Sidebar)
+# 9. Bočný panel (Sidebar)
 with st.sidebar:
-    st.markdown(f"👤 **{st.session_state.username}**")
-    if st.button("🚪 Odhlásiť sa", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.username = ""
-        st.rerun()
-
-    st.divider()
     st.markdown(f"## {t['title']}", unsafe_allow_html=True)
     
     col_new, col_clear = st.columns([0.7, 0.3])
@@ -406,7 +357,7 @@ with st.sidebar:
             use_container_width=True
         )
 
-# 11. Hlavné okno chatu
+# 10. Hlavné okno chatu
 aktualny_chat = st.session_state.chats[st.session_state.current_chat_id]
 
 st.markdown(f"# {t['title']}", unsafe_allow_html=True)
@@ -447,13 +398,13 @@ for idx, msg in enumerate(aktualny_chat["messages"]):
             with st.popover("📋"):
                 st.code(msg["content"], language=None)
 
-# Regenerovanie odpovede (ChatGPT Funkcia)
+# Regenerovanie odpovede
 if aktualny_chat["messages"] and aktualny_chat["messages"][-1]["role"] == "assistant":
     if st.button("🔄 Regenerovať odpoveď"):
         aktualny_chat["messages"].pop()
         st.rerun()
 
-# 12. Spodný vstupný panel
+# 11. Spodný vstupný panel
 col_plus, col_input = st.columns([0.1, 0.9])
 
 with col_plus:
@@ -468,7 +419,7 @@ with col_input:
 
 prompt = prompt_input or st.session_state.pop("pouzity_prompt", None)
 
-# 13. Generovanie odpovede
+# 12. Generovanie odpovede
 if prompt:
     if len(aktualny_chat["messages"]) == 0:
         aktualny_chat["title"] = prompt[:18] + "..." if len(prompt) > 18 else prompt
