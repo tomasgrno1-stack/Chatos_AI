@@ -1,5 +1,6 @@
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
 import uuid
 import pypdf
@@ -8,19 +9,111 @@ import pandas as pd
 import requests
 import threading
 import time
+import json
+import io
+import os
+import datetime
 
-# 1. Nastavenie stránky
+# ==============================================================================
+# 1. KONFIGURÁCIA STRÁNKY A ŠTÝLOV
+# ==============================================================================
+
 st.set_page_config(
-    page_title="Polaris",
-    page_icon="✨",
-    layout="centered",
+    page_title="Polaris AI (Public Version)",
+    page_icon="💬",
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 2. Automatický Keep-Alive pinger (24/7 chod bez uspania)
-APP_URL = "https://polaris-ai.streamlit.app"  # Uprav podľa tvojej presnej URL
+# Vlastné CSS pre čisti minimalistický vzhľad
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #f9f9fb !important;
+        color: #0d0d0d !important;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    }
 
-def keep_alive():
+    [data-testid="stSidebar"] {
+        background-color: #f3f3f7 !important;
+        border-right: 1px solid #e5e5e5 !important;
+        padding-top: 0.5rem;
+    }
+
+    #MainMenu, header, footer {visibility: hidden;}
+    
+    .block-container {
+        padding-top: 1rem !important;
+        padding-bottom: 5rem !important;
+        max-width: 950px !important;
+    }
+
+    .hero-title {
+        text-align: center;
+        font-size: 2.2rem;
+        font-weight: 600;
+        color: #0d0d0d;
+        margin-top: 8vh;
+        margin-bottom: 1.5rem;
+    }
+
+    .public-badge {
+        background-color: #e0f2fe;
+        color: #0369a1;
+        border-radius: 16px;
+        padding: 6px 14px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+    }
+
+    .sidebar-section-title {
+        font-size: 0.8rem;
+        color: #8e8e93;
+        padding: 12px 12px 4px 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .anon-profile-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px;
+        border-radius: 8px;
+    }
+    
+    .avatar-circle-anon {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        background-color: #64748b;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
+    .settings-header {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==============================================================================
+# 2. KEEP-ALIVE PINGER SERVICE
+# ==============================================================================
+
+APP_URL = "https://polaris-ai.streamlit.app"
+
+def keep_alive_worker():
+    """Pozadový thread udržiavajúci aplikáciu v chode bez nutnosti prihlásenia."""
     while True:
         time.sleep(240)
         try:
@@ -30,500 +123,427 @@ def keep_alive():
 
 if "pinger_started" not in st.session_state:
     st.session_state.pinger_started = True
-    threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=keep_alive_worker, daemon=True).start()
 
-# 3. Rýchla detekcia jazyka s krátkym timeoutom
-@st.cache_data(ttl=86400)
-def ziskaj_jazyk_pouzivatela():
-    try:
-        response = requests.get("https://ipapi.co/json/", timeout=1)
-        data = response.json()
-        krajina = data.get("country_code", "US")
-        
-        jazyky = {
-            "SK": "sk", "CZ": "cs", "DE": "de", 
-            "AT": "de", "PL": "pl", "ES": "es", 
-            "FR": "fr", "IT": "it"
-        }
-        return jazyky.get(krajina, "en")
-    except Exception:
-        return "en"
+# ==============================================================================
+# 3. INITIALIZATION OF API CLIENT & MODELS
+# ==============================================================================
 
-jazyk_ui = ziskaj_jazyk_pouzivatela()
-
-# Slovník lokalizácie rozhrania
-TEXTY = {
-    "sk": {
-        "title": '<span class="rgb-star">★</span> Polaris <span class="rgb-star">★</span>',
-        "subtitle": "Autor: Tomáš Grňo",
-        "new_chat": "➕ Nový",
-        "clear_all": "🧹 Všetko",
-        "history": "💬 História chatov",
-        "settings": "⚙️ Nastavenia",
-        "placeholder": "Ako ti môžem pomôcť?",
-        "hero_title": 'Ahoj, ja som Polaris <span class="rgb-star">★</span>',
-        "hero_sub": "S čím chceš dnes začať?",
-        "card1_title": "💡 Navrhni nápad na projekt",
-        "card1_sub": "Aplikácia alebo biznis nápad",
-        "card1_prompt": "Navrhni mi 3 kreatívne nápady na softvérový projekt.",
-        "card2_title": "📝 Napíš e-mail / správu",
-        "card2_sub": "Profesionálna komunikácia",
-        "card2_prompt": "Pomôž mi napísať profesionálny e-mail s poďakovaním.",
-        "role_label": "Rola Polaris:",
-        "thinking": "Polaris premýšľa..."
-    },
-    "cs": {
-        "title": '<span class="rgb-star">★</span> Polaris <span class="rgb-star">★</span>',
-        "subtitle": "Autor: Tomáš Grňo",
-        "new_chat": "➕ Nový",
-        "clear_all": "🧹 Vše",
-        "history": "💬 Historie chatů",
-        "settings": "⚙️ Nastavení",
-        "placeholder": "Jak vám mohu pomoci?",
-        "hero_title": 'Ahoj, já jsem Polaris <span class="rgb-star">★</span>',
-        "hero_sub": "Čím dnes začneme?",
-        "card1_title": "💡 Navrhni nápad na projekt",
-        "card1_sub": "Aplikace nebo podnikatelský nápad",
-        "card1_prompt": "Navrhni mi 3 kreativní nápady na softwarový projekt.",
-        "card2_title": "📝 Napiš e-mail / zpráva",
-        "card2_sub": "Profesionální komunikace",
-        "card2_prompt": "Pomoz mi napsat profesionální e-mail s poděkováním.",
-        "role_label": "Role Polaris:",
-        "thinking": "Polaris přemýšlí..."
-    },
-    "de": {
-        "title": '<span class="rgb-star">★</span> Polaris <span class="rgb-star">★</span>',
-        "subtitle": "Autor: Tomáš Grňo",
-        "new_chat": "➕ Neu",
-        "clear_all": "🧹 Alles löschen",
-        "history": "💬 Chat-Verlauf",
-        "settings": "⚙️ Einstellungen",
-        "placeholder": "Wie kann ich dir helfen?",
-        "hero_title": 'Hallo, ich bin Polaris <span class="rgb-star">★</span>',
-        "hero_sub": "Womit möchtest du heute beginnen?",
-        "card1_title": "💡 Schlage eine Projektidee vor",
-        "card1_sub": "App- oder Geschäftsidee",
-        "card1_prompt": "Schlage mir 3 kreative Ideen für ein Softwareprojekt vor.",
-        "card2_title": "📝 Schreibe eine E-Mail / Nachricht",
-        "card2_sub": "Professionelle Kommunikation",
-        "card2_prompt": "Hilf mir, eine professionelle Dankes-E-Mail zu schreiben.",
-        "role_label": "Rolle von Polaris:",
-        "thinking": "Polaris denkt nach..."
-    },
-    "en": {
-        "title": '<span class="rgb-star">★</span> Polaris <span class="rgb-star">★</span>',
-        "subtitle": "Created by: Tomáš Grňo",
-        "new_chat": "➕ New",
-        "clear_all": "🧹 Clear all",
-        "history": "💬 Chat History",
-        "settings": "⚙️ Settings",
-        "placeholder": "How can I help you?",
-        "hero_title": 'Hello, I am Polaris <span class="rgb-star">★</span>',
-        "hero_sub": "What would you like to start with today?",
-        "card1_title": "💡 Suggest a project idea",
-        "card1_sub": "App or business idea",
-        "card1_prompt": "Suggest 3 creative ideas for a software project.",
-        "card2_title": "📝 Write an email / message",
-        "card2_sub": "Professional communication",
-        "card2_prompt": "Help me write a professional thank-you email.",
-        "role_label": "Polaris Role:",
-        "thinking": "Polaris is thinking..."
-    }
-}
-
-t = TEXTY.get(jazyk_ui, TEXTY["en"])
-
-# 4. CSS Štýlovanie + RGB Efekt na hviezdy
-st.markdown("""
-    <style>
-    @keyframes rgbGlow {
-        0% { color: #ff0055; text-shadow: 0 0 8px #ff0055; }
-        20% { color: #00e5ff; text-shadow: 0 0 8px #00e5ff; }
-        40% { color: #00ff66; text-shadow: 0 0 8px #00ff66; }
-        60% { color: #ffcc00; text-shadow: 0 0 8px #ffcc00; }
-        80% { color: #b026ff; text-shadow: 0 0 8px #b026ff; }
-        100% { color: #ff0055; text-shadow: 0 0 8px #ff0055; }
-    }
-
-    .rgb-star {
-        display: inline-block;
-        animation: rgbGlow 3s infinite linear;
-        font-weight: bold;
-    }
-
-    .stApp {
-        background: radial-gradient(ellipse at bottom, #1b2735 0%, #090a0f 100%);
-        background-attachment: fixed;
-        color: #e6edf3;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    }
-    
-    .stApp::before {
-        content: "";
-        position: fixed;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: radial-gradient(circle at 50% 30%, rgba(76, 29, 149, 0.25) 0%, rgba(15, 23, 42, 0) 70%),
-                    radial-gradient(circle at 80% 80%, rgba(14, 165, 233, 0.15) 0%, rgba(15, 23, 42, 0) 50%);
-        pointer-events: none;
-        z-index: 0;
-    }
-
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
-    ::-webkit-scrollbar-thumb { background: rgba(56, 189, 248, 0.2); border-radius: 10px; }
-
-    [data-testid="stSidebar"] {
-        background-color: rgba(15, 23, 42, 0.85) !important;
-        backdrop-filter: blur(12px);
-        border-right: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    [data-testid="stSidebar"] .stButton > button {
-        background: rgba(30, 41, 59, 0.4) !important;
-        backdrop-filter: blur(6px);
-        border: 1px solid rgba(255, 255, 255, 0.08) !important;
-        border-radius: 12px !important;
-    }
-
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(8px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-
-    [data-testid="stChatMessage"] {
-        background-color: transparent !important;
-        border: none !important;
-        padding: 0.5rem 0;
-        margin-bottom: 0.8rem;
-        animation: fadeIn 0.3s ease-out forwards;
-    }
-
-    [data-testid="stChatMessageAvatarUser"] {
-        background: linear-gradient(135deg, #6366f1, #a855f7) !important;
-        border-radius: 50% !important;
-    }
-
-    [data-testid="stChatMessageAvatarAssistant"] {
-        background: linear-gradient(135deg, #0ea5e9, #a855f7) !important;
-        border-radius: 50% !important;
-    }
-
-    [data-testid="stChatInput"] {
-        border-radius: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        background-color: rgba(15, 23, 42, 0.9) !important;
-    }
-
-    div[data-testid="stBottom"], div[data-testid="stBottom"] > div {
-        background: transparent !important;
-        border: none !important;
-    }
-
-    div[data-testid="stHorizontalBlock"]:has(.stPopover) {
-        position: fixed;
-        bottom: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: calc(100% - 40px);
-        max-width: 730px;
-        z-index: 100;
-        background-color: #0f172a;
-        padding: 6px 12px;
-        border-radius: 24px;
-        border: 1px solid rgba(255, 255, 255, 0.15);
-    }
-
-    .stPopover>button {
-        border-radius: 50% !important;
-        width: 42px !important;
-        height: 42px !important;
-        padding: 0 !important;
-        font-size: 20px !important;
-        background-color: rgba(30, 41, 59, 0.8) !important;
-    }
-
-    .main .block-container { padding-bottom: 120px; }
-    </style>
-""", unsafe_allow_html=True)
-
-# 5. Načítanie API kľúča
 if "GOOGLE_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 else:
-    st.error("Chýba GOOGLE_API_KEY v Secrets!")
+    st.error("Chýba GOOGLE_API_KEY v st.secrets! Pridajte API kľúč do nastavení Streamlitu.")
     st.stop()
 
-# 6. Model selector
-@st.cache_data(ttl=86400)
-def ziskaj_dostupne_modely():
-    return [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro"
-    ]
+MODELE = {
+    "Gemini 2.5 Flash (Rýchly & Multimodálny)": "gemini-2.5-flash",
+    "Gemini 2.5 Pro (Pokročilá logika a kódovanie)": "gemini-2.5-pro",
+    "Gemini 1.5 Pro (Stabilný model)": "gemini-1.5-pro",
+    "Gemini 1.5 Flash (Ľahký model)": "gemini-1.5-flash"
+}
 
-# 7. Správa session state
-if "chats" not in st.session_state:
-    st.session_state.chats = {}
+ROLY = {
+    "Personal Assistant": """You are Polaris, an advanced AI assistant.
+CRITICAL MANDATE:
+Detect the exact language of the user's latest prompt and respond EXCLUSIVELY in that exact language (e.g. Slovak if Slovak, English if English, German if German). Never switch to another language.""",
+    
+    "Senior Software Engineer": """You are Polaris, a principal software architect and senior engineer.
+CRITICAL MANDATE:
+Detect and mirror the user's input language strictly.
+Provide high quality, production-ready code with concise technical explanations.""",
+    
+    "Concise Assistant": """You are Polaris.
+CRITICAL MANDATE:
+Respond strictly in the user's prompt language.
+Limit responses to a maximum of 2-3 sentences.""",
 
-if "current_chat_id" not in st.session_state:
-    prve_id = str(uuid.uuid4())
-    st.session_state.chats[prve_id] = {"title": "Polaris", "messages": []}
-    st.session_state.current_chat_id = prve_id
+    "Data Analyst": """You are Polaris, a data analytics expert.
+CRITICAL MANDATE:
+Detect and mirror the user's input language strictly.
+Analyze provided datasets, code snippets, or analytical queries accurately.""",
 
-if "aktivny_rezim" not in st.session_state:
-    st.session_state.aktivny_rezim = "Standard"
+    "Creative Writer": """You are Polaris, a creative writing expert.
+CRITICAL MANDATE:
+Detect and mirror the user's input language strictly.
+Generate expressive, fluid, and engaging prose."""
+}
+
+# ==============================================================================
+# 4. ANONYMOUS SESSION STATE INITIALIZATION (BEZ PRIHLASOVANIA)
+# ==============================================================================
+
+def initialize_anon_session():
+    # Automatické anonymné ID relácie pre každého návštevníka
+    if "anon_user_id" not in st.session_state:
+        st.session_state.anon_user_id = f"guest_{str(uuid.uuid4())[:8]}"
+        
+    if "chats" not in st.session_state:
+        st.session_state.chats = {}
+    if "archived_chats" not in st.session_state:
+        st.session_state.archived_chats = {}
+    if "current_chat_id" not in st.session_state:
+        first_id = str(uuid.uuid4())
+        st.session_state.chats[first_id] = {
+            "title": "Nový konverzácia", 
+            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "messages": []
+        }
+        st.session_state.current_chat_id = first_id
+        
+    if "show_settings" not in st.session_state:
+        st.session_state.show_settings = False
+    if "settings_tab" not in st.session_state:
+        st.session_state.settings_tab = "Všeobecné"
+    if "top_tab" not in st.session_state:
+        st.session_state.top_tab = "Chat"
+    if "vybrana_rola" not in st.session_state:
+        st.session_state.vybrana_rola = "Personal Assistant"
+    if "vybrany_model" not in st.session_state:
+        st.session_state.vybrany_model = "Gemini 2.5 Flash (Rýchly & Multimodálny)"
+    if "enable_web_search" not in st.session_state:
+        st.session_state.enable_web_search = True
+    if "temperature" not in st.session_state:
+        st.session_state.temperature = 0.7
+    if "max_tokens" not in st.session_state:
+        st.session_state.max_tokens = 8192
+    if "system_prompt_custom" not in st.session_state:
+        st.session_state.system_prompt_custom = ""
+    if "search_query" not in st.session_state:
+        st.session_state.search_query = ""
+    if "theme_mode" not in st.session_state:
+        st.session_state.theme_mode = "Svetlý"
+    if "default_workspace" not in st.session_state:
+        st.session_state.default_workspace = "Public Workspace"
+
+initialize_anon_session()
+
+# ==============================================================================
+# 5. CHAT & DATA MANAGEMENT
+# ==============================================================================
 
 def vytvor_novy_chat():
     nove_id = str(uuid.uuid4())
-    st.session_state.chats[nove_id] = {"title": "Polaris", "messages": []}
+    st.session_state.chats[nove_id] = {
+        "title": "Nový konverzácia", 
+        "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "messages": []
+    }
     st.session_state.current_chat_id = nove_id
 
-# 8. Roly asistenta
-ROLY = {
-    "Personal Assistant": """You are Polaris, a highly intelligent, expert AI assistant. 
-ALWAYS respond in the EXACT same language that the user uses to write to you (e.g., if the user writes in Slovak, respond in Slovak; if in English, respond in English, etc.). 
-Analyze requests deeply, think step-by-step when solving complex problems, and provide thorough, logically structured, and extremely helpful answers.""",
-    
-    "Programmer": """You are Polaris, an elite senior software engineer and system architect. 
-ALWAYS respond in the EXACT same language used by the user. 
-Provide clean, efficient, production-ready code with concise explanations and structural best practices.""",
-    
-    "English Teacher": "You are Polaris. Respond in English and provide a brief translation in the language used by the user below.",
-    
-    "Concise Assistant": "You are Polaris. ALWAYS respond in the EXACT same language used by the user, limiting responses to a maximum of 2-3 short sentences."
-}
+def archivuj_chat(chat_id):
+    if chat_id in st.session_state.chats:
+        st.session_state.archived_chats[chat_id] = st.session_state.chats[chat_id]
+        del st.session_state.chats[chat_id]
+        if st.session_state.current_chat_id == chat_id:
+            if st.session_state.chats:
+                st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
+            else:
+                vytvor_novy_chat()
 
-# 9. Bočný panel (Sidebar)
+def obnov_chat_z_archivu(chat_id):
+    if chat_id in st.session_state.archived_chats:
+        st.session_state.chats[chat_id] = st.session_state.archived_chats[chat_id]
+        del st.session_state.archived_chats[chat_id]
+        st.session_state.current_chat_id = chat_id
+
+def vymaz_chat(chat_id):
+    if chat_id in st.session_state.chats:
+        del st.session_state.chats[chat_id]
+        if st.session_state.current_chat_id == chat_id:
+            if st.session_state.chats:
+                st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
+            else:
+                vytvor_novy_chat()
+
+def exportuj_chat_json(chat_id):
+    if chat_id in st.session_state.chats:
+        return json.dumps(st.session_state.chats[chat_id], ensure_ascii=False, indent=2)
+    return ""
+
+def exportuj_chat_markdown(chat_id):
+    if chat_id in st.session_state.chats:
+        chat_data = st.session_state.chats[chat_id]
+        md = f"# {chat_data['title']}\n*Vytvorené: {chat_data.get('created_at', 'N/A')}*\n\n---\n\n"
+        for m in chat_data["messages"]:
+            role = "Užívateľ" if m["role"] == "user" else "Asistent"
+            md += f"### {role}\n{m['content']}\n\n"
+        return md
+    return ""
+
+# ==============================================================================
+# 6. BOČNÝ PANEL (SIDEBAR)
+# ==============================================================================
+
 with st.sidebar:
-    st.markdown(f"## {t['title']}", unsafe_allow_html=True)
-    
-    col_new, col_clear = st.columns([0.7, 0.3])
-    with col_new:
-        if st.button(t["new_chat"], use_container_width=True):
-            vytvor_novy_chat()
-            st.rerun()
-    with col_clear:
-        if st.button(t["clear_all"], use_container_width=True):
-            st.session_state.chats = {}
-            vytvor_novy_chat()
-            st.rerun()
+    st.markdown("""
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; margin-bottom: 8px;">
+            <span style="font-weight: 600; font-size: 1.15rem; color: #1c1c1e;">Polaris AI ∨</span>
+        </div>
+    """, unsafe_allow_html=True)
 
-    st.divider()
-    st.subheader(t["history"])
-    
-    for chat_id, chat_data in list(st.session_state.chats.items()):
+    if st.button("📝 Nový čet", key="btn_new_chat_anon", use_container_width=True):
+        vytvor_novy_chat()
+        st.session_state.show_settings = False
+        st.rerun()
+
+    # Vyhľadávanie v nedávnych konverzáciách
+    st.session_state.search_query = st.text_input("🔍 Hľadať v správach...", value=st.session_state.search_query, key="sidebar_search_anon")
+
+    st.markdown("""
+        <div style="padding: 6px 10px; font-size: 0.9rem; color: #2d2d2d;">🖼️ Obrázky a dokumenty</div>
+        <div style="padding: 6px 10px; font-size: 0.9rem; color: #2d2d2d;">🌐 Vyhľadávanie na webe</div>
+        <div class="sidebar-section-title">História relácie</div>
+    """, unsafe_allow_html=True)
+
+    # Zobrazenie filtrirovaného zoznamu
+    filtered_chats = {}
+    for cid, cdata in st.session_state.chats.items():
+        if st.session_state.search_query.lower() in cdata["title"].lower():
+            filtered_chats[cid] = cdata
+
+    for chat_id, chat_data in list(filtered_chats.items()):
         is_active = (chat_id == st.session_state.current_chat_id)
-        label = f"📍 {chat_data['title']}" if is_active else chat_data['title']
+        label = f"💬 {chat_data['title']}"
         
-        col1, col2, col3 = st.columns([0.7, 0.15, 0.15])
-        with col1:
-            if st.button(label, key=f"select_{chat_id}", use_container_width=True):
+        col_btn, col_act = st.columns([0.80, 0.20])
+        with col_btn:
+            if st.button(label, key=f"select_{chat_id}", use_container_width=True, type="secondary" if not is_active else "primary"):
                 st.session_state.current_chat_id = chat_id
+                st.session_state.show_settings = False
                 st.rerun()
-        with col2:
-            if st.button("✏️", key=f"edit_btn_{chat_id}"):
-                st.session_state[f"editing_{chat_id}"] = not st.session_state.get(f"editing_{chat_id}", False)
-                st.rerun()
-        with col3:
-            if st.button("🗑", key=f"del_{chat_id}"):
-                del st.session_state.chats[chat_id]
-                if st.session_state.current_chat_id == chat_id:
-                    if st.session_state.chats:
-                        st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
-                    else:
-                        vytvor_novy_chat()
-                st.rerun()
-
-        if st.session_state.get(f"editing_{chat_id}", False):
-            novy_nazov = st.text_input("Názov:", value=chat_data['title'], key=f"rename_input_{chat_id}")
-            if st.button("Uložiť", key=f"save_rename_{chat_id}", use_container_width=True):
-                if novy_nazov.strip():
-                    st.session_state.chats[chat_id]['title'] = novy_nazov.strip()
-                    st.session_state[f"editing_{chat_id}"] = False
+        with col_act:
+            with st.popover("⋮"):
+                st.caption(f"Vytvorené: {chat_data.get('created_at', 'N/A')}")
+                nove_meno = st.text_input("Prejmenovať", value=chat_data["title"], key=f"rename_in_{chat_id}")
+                if st.button("Uložiť názov", key=f"save_name_{chat_id}"):
+                    st.session_state.chats[chat_id]["title"] = nove_meno
+                    st.rerun()
+                
+                st.divider()
+                if st.button("📦 Archivovať", key=f"arch_{chat_id}"):
+                    archivuj_chat(chat_id)
+                    st.rerun()
+                
+                if st.button("🗑 Vymazať", key=f"del_{chat_id}"):
+                    vymaz_chat(chat_id)
                     st.rerun()
 
     st.divider()
-    st.header(t["settings"])
-    vybrana_rola = st.selectbox(t["role_label"], list(ROLY.keys()))
 
-    curr_chat = st.session_state.chats[st.session_state.current_chat_id]
-    if curr_chat["messages"]:
-        st.divider()
-        export_text = "\n\n".join([f"[{m['role'].upper()}]:\n{m['content']}" for m in curr_chat["messages"]])
-        st.download_button(
-            "📥 Stiahnuť chat (.txt)",
-            data=export_text,
-            file_name=f"polaris_chat_{st.session_state.current_chat_id[:6]}.txt",
-            use_container_width=True
-        )
-
-# 10. Hlavné okno chatu
-aktualny_chat = st.session_state.chats[st.session_state.current_chat_id]
-
-st.markdown(f"# {t['title']}", unsafe_allow_html=True)
-st.caption(f"{t['subtitle']} | Mode: {st.session_state.aktivny_rezim}")
-
-if len(aktualny_chat["messages"]) == 0:
-    st.markdown(f"""
-        <div style="text-align: center; padding: 30px 20px 20px 20px;">
-            <h2 style="background: linear-gradient(to right, #38bdf8, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 2.2rem; font-weight: 700;">
-                {t['hero_title']}
-            </h2>
-            <p style="color: #94a3b8; font-size: 1.05rem;">{t['hero_sub']}</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    col_card1, col_card2 = st.columns(2)
-    with col_card1:
-        if st.button(f"**{t['card1_title']}**\n\n_{t['card1_sub']}_", use_container_width=True):
-            st.session_state["pouzity_prompt"] = t['card1_prompt']
-            st.rerun()
-    with col_card2:
-        if st.button(f"**{t['card2_title']}**\n\n_{t['card2_sub']}_", use_container_width=True):
-            st.session_state["pouzity_prompt"] = t['card2_prompt']
+    # Karta anonymného hostinského profilu bez loginu
+    col_prof1, col_prof2 = st.columns([0.82, 0.18])
+    with col_prof1:
+        st.markdown(f"""
+            <div class="anon-profile-card">
+                <div class="avatar-circle-anon">G</div>
+                <div>
+                    <div style="font-weight: 600; font-size: 0.85rem; color: #1c1c1e;">Host / Anonym</div>
+                    <div style="font-size: 0.72rem; color: #64748b;">ID: {st.session_state.anon_user_id}</div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    with col_prof2:
+        if st.button("⚙️", key="open_settings_anon_btn", help="Nastavenia"):
+            st.session_state.show_settings = not st.session_state.show_settings
             st.rerun()
 
-for idx, msg in enumerate(aktualny_chat["messages"]):
-    avatar = "✨" if msg["role"] == "assistant" else "👤"
-    with st.chat_message(msg["role"], avatar=avatar):
-        if "image" in msg and msg["image"] is not None:
-            st.image(msg["image"], use_container_width=True)
-        
-        if "file_info" in msg and msg["file_info"]:
-            st.caption(f"📎 **{msg['file_info']}**")
-            
-        st.markdown(msg["content"])
-        
-        if msg["role"] == "assistant":
-            with st.popover("📋"):
-                st.code(msg["content"], language=None)
+# ==============================================================================
+# 7. NASTAVENIA (SETTINGS VIEW)
+# ==============================================================================
 
-# Regenerovanie odpovede
-if aktualny_chat["messages"] and aktualny_chat["messages"][-1]["role"] == "assistant":
-    if st.button("🔄 Regenerovať odpoveď"):
-        aktualny_chat["messages"].pop()
-        st.rerun()
+if st.session_state.show_settings:
+    col_back, _ = st.columns([0.2, 0.8])
+    with col_back:
+        if st.button("← Späť do chatu", key="close_settings_anon"):
+            st.session_state.show_settings = False
+            st.rerun()
 
-# 11. Spodný vstupný panel
-col_plus, col_input = st.columns([0.1, 0.9])
+    st.markdown("## ⚙️ Nastavenia Aplikácie")
+    st.divider()
 
-with col_plus:
-    with st.popover("➕"):
-        nahraty_subor = st.file_uploader(
-            "File:",
-            type=["png", "jpg", "jpeg", "txt", "pdf", "docx", "xlsx", "xls", "csv"]
-        )
-
-with col_input:
-    prompt_input = st.chat_input(t["placeholder"])
-
-prompt = prompt_input or st.session_state.pop("pouzity_prompt", None)
-
-# 12. Generovanie odpovede
-if prompt:
-    if len(aktualny_chat["messages"]) == 0:
-        aktualny_chat["title"] = prompt[:18] + "..." if len(prompt) > 18 else prompt
-
-    sprava_pouzivatela = {"role": "user", "content": prompt}
-    obsah_spravy = [prompt]
+    col_set_nav, col_set_content = st.columns([0.30, 0.70])
     
-    if 'nahraty_subor' in locals() and nahraty_subor is not None:
-        subor_typ = nahraty_subor.type
-        nazov_suboru = nahraty_subor.name
+    with col_set_nav:
+        st.markdown("**Konfigurácia AI**")
+        tabs_ai = ["Všeobecné", "Model & Engine", "Vzhľad", "Archivované čety"]
+        for t_item in tabs_ai:
+            if st.button(t_item, key=f"set_tab_{t_item}", use_container_width=True, type="primary" if st.session_state.settings_tab == t_item else "secondary"):
+                st.session_state.settings_tab = t_item
+                st.rerun()
+
+    with col_set_content:
+        st.markdown(f"<div class='settings-header'>{st.session_state.settings_tab}</div>", unsafe_allow_html=True)
         
-        if subor_typ in ["image/png", "image/jpeg", "image/jpg"]:
-            img = Image.open(nahraty_subor)
-            obsah_spravy.append(img)
-            sprava_pouzivatela["image"] = img
-            sprava_pouzivatela["file_info"] = nazov_suboru
-            
-        elif subor_typ == "text/plain":
-            text_suboru = nahraty_subor.read().decode("utf-8")
-            obsah_spravy.append(f"\n\nFile text ({nazov_suboru}):\n{text_suboru}")
-            sprava_pouzivatela["file_info"] = nazov_suboru
-            
-        elif subor_typ == "application/pdf":
-            try:
-                pdf_reader = pypdf.PdfReader(nahraty_subor)
-                pdf_text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
-                obsah_spravy.append(f"\n\nPDF content ({nazov_suboru}):\n{pdf_text}")
+        if st.session_state.settings_tab == "Všeobecné":
+            st.markdown("#### Verejný Režim")
+            st.info("Aplikácia beží bez potreby registrácie alebo prihlásenia. Konverzácie sú uložené lokálne vo vašom prehliadači.")
+            st.toggle("Uložiť históriu počas relácie", value=True)
+
+        elif st.session_state.settings_tab == "Model & Engine":
+            st.markdown("#### Gemini API Engine")
+            st.session_state.vybrany_model = st.selectbox("Model:", list(MODELE.keys()), index=list(MODELE.keys()).index(st.session_state.vybrany_model))
+            st.session_state.enable_web_search = st.toggle("🌐 Google Search Grounding", value=st.session_state.enable_web_search)
+            st.session_state.vybrana_rola = st.selectbox("Rola:", list(ROLY.keys()), index=list(ROLY.keys()).index(st.session_state.vybrana_rola))
+            st.session_state.temperature = st.slider("Temperature:", 0.0, 1.0, st.session_state.temperature, 0.05)
+
+        elif st.session_state.settings_tab == "Vzhľad":
+            st.markdown("#### Téma rozhrania")
+            st.session_state.theme_mode = st.radio("Farebný režim:", ["Svetlý", "Tmavý"])
+
+        elif st.session_state.settings_tab == "Archivované čety":
+            st.markdown("#### Archivované konverzácie")
+            if not st.session_state.archived_chats:
+                st.info("Žiadne archivované čety.")
+            else:
+                for arch_id, arch_data in list(st.session_state.archived_chats.items()):
+                    col_a1, col_a2 = st.columns([0.7, 0.3])
+                    with col_a1:
+                        st.write(f"💬 **{arch_data['title']}**")
+                    with col_a2:
+                        if st.button("Obnoviť", key=f"rest_{arch_id}"):
+                            obnov_chat_z_archivu(arch_id)
+                            st.rerun()
+
+# ==============================================================================
+# 8. HLAVNÝ CHAT WORKSPACE
+# ==============================================================================
+
+else:
+    col_top1, col_top2, col_top3 = st.columns([0.25, 0.50, 0.25])
+    with col_top1:
+        st.markdown('<div class="public-badge">🌐 Public Access (No Login)</div>', unsafe_allow_html=True)
+    with col_top2:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("💬 Chat", use_container_width=True, type="primary" if st.session_state.top_tab == "Chat" else "secondary"):
+                st.session_state.top_tab = "Chat"
+                st.rerun()
+        with c2:
+            if st.button("🛠️ IDE / Kódovanie", use_container_width=True, type="primary" if st.session_state.top_tab == "Work" else "secondary"):
+                st.session_state.top_tab = "Work"
+                st.rerun()
+
+    if st.session_state.top_tab == "Work":
+        st.markdown("### 🛠️ Kódovací editor pre hostí")
+        st.text_area("Kód Python:", value="print('Aplikácia beží bez prihlasovania!')", height=300)
+    else:
+        aktualny_chat = st.session_state.chats[st.session_state.current_chat_id]
+
+        if not aktualny_chat["messages"]:
+            st.markdown('<div class="hero-title">Môžeme začať, keď budeš chcieť.</div>', unsafe_allow_html=True)
+
+        # Exporty chatu
+        if aktualny_chat["messages"]:
+            col_exp1, col_exp2, _ = st.columns([0.2, 0.2, 0.6])
+            with col_exp1:
+                st.download_button("📥 JSON", data=exportuj_chat_json(st.session_state.current_chat_id), file_name="chat.json", mime="application/json")
+            with col_exp2:
+                st.download_button("📝 Markdown", data=exportuj_chat_markdown(st.session_state.current_chat_id), file_name="chat.md", mime="text/markdown")
+
+        # História správ
+        for msg in aktualny_chat["messages"]:
+            with st.chat_message(msg["role"]):
+                if "image" in msg and msg["image"] is not None:
+                    st.image(msg["image"], use_container_width=True)
+                if "file_info" in msg and msg["file_info"]:
+                    st.caption(f"📎 Príloha: **{msg['file_info']}**")
+                st.markdown(msg["content"])
+
+        # Vstupný panel
+        col_plus, col_in = st.columns([0.07, 0.93])
+        uploaded_file = None
+        with col_plus:
+            with st.popover("➕"):
+                uploaded_file = st.file_uploader(
+                    "Príloha:",
+                    type=["png", "jpg", "jpeg", "mp3", "wav", "mp4", "txt", "pdf", "docx", "xlsx", "csv"],
+                    key=f"anon_up_{st.session_state.current_chat_id}"
+                )
+
+        with col_in:
+            prompt = st.chat_input("Názov alebo správu...")
+
+        if prompt:
+            if len(aktualny_chat["messages"]) == 0:
+                aktualny_chat["title"] = prompt[:25] + "..." if len(prompt) > 25 else prompt
+
+            sprava_pouzivatela = {"role": "user", "content": prompt}
+            parts_list = []
+
+            if uploaded_file is not None:
+                subor_typ = uploaded_file.type
+                nazov_suboru = uploaded_file.name
                 sprava_pouzivatela["file_info"] = nazov_suboru
-            except Exception as e:
-                st.error(f"Error PDF: {e}")
 
-        elif nazov_suboru.endswith(".docx"):
-            try:
-                doc = docx.Document(nahraty_subor)
-                docx_text = "\n".join([p.text for p in doc.paragraphs if p.text])
-                obsah_spravy.append(f"\n\nWord content ({nazov_suboru}):\n{docx_text}")
-                sprava_pouzivatela["file_info"] = nazov_suboru
-            except Exception as e:
-                st.error(f"Error Word: {e}")
+                if subor_typ in ["image/png", "image/jpeg", "image/jpg"]:
+                    img = Image.open(uploaded_file)
+                    parts_list.append(img)
+                    sprava_pouzivatela["image"] = img
 
-        elif nazov_suboru.endswith((".xlsx", ".xls", ".csv")):
-            try:
-                df = pd.read_csv(nahraty_subor) if nazov_suboru.endswith(".csv") else pd.read_excel(nahraty_subor)
-                excel_text = df.to_markdown(index=False)
-                obsah_spravy.append(f"\n\nTable data ({nazov_suboru}):\n{excel_text}")
-                sprava_pouzivatela["file_info"] = nazov_suboru
-            except Exception as e:
-                st.error(f"Error Table: {e}")
+                elif subor_typ in ["audio/mp3", "audio/wav", "video/mp4"]:
+                    subor_bytes = uploaded_file.read()
+                    parts_list.append(types.Part.from_bytes(data=subor_bytes, mime_type=subor_typ))
 
-    aktualny_chat["messages"].append(sprava_pouzivatela)
-    
-    with st.chat_message("user", avatar="👤"):
-        if "image" in sprava_pouzivatela:
-            st.image(sprava_pouzivatela["image"], use_container_width=True)
-        if "file_info" in sprava_pouzivatela:
-            st.caption(f"📎 **{sprava_pouzivatela['file_info']}**")
-        st.markdown(prompt)
+                elif subor_typ == "text/plain":
+                    parts_list.append(f"Text ({nazov_suboru}):\n{uploaded_file.read().decode('utf-8')}")
 
-    with st.chat_message("assistant", avatar="✨"):
-        message_placeholder = st.empty()
+                elif subor_typ == "application/pdf":
+                    try:
+                        pdf_reader = pypdf.PdfReader(uploaded_file)
+                        pdf_text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
+                        parts_list.append(f"PDF ({nazov_suboru}):\n{pdf_text}")
+                    except Exception as e:
+                        st.error(f"PDF Chyba: {e}")
 
-        with st.spinner(t["thinking"]):
-            generation_config = genai.types.GenerationConfig(
-                temperature=0.7,
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=8192
-            )
+                elif nazov_suboru.endswith((".xlsx", ".xls", ".csv")):
+                    try:
+                        df = pd.read_csv(uploaded_file) if nazov_suboru.endswith(".csv") else pd.read_excel(uploaded_file)
+                        parts_list.append(f"Tabuľka ({nazov_suboru}):\n{df.to_markdown(index=False)}")
+                    except Exception as e:
+                        st.error(f"Tabuľka Chyba: {e}")
 
-            pouzita_historia = aktualny_chat["messages"][:-1][-10:]
-            
-            gemini_history = []
-            for m in pouzita_historia:
-                role = "user" if m["role"] == "user" else "model"
-                gemini_history.append({"role": role, "parts": [m["content"]]})
+            parts_list.append(prompt)
+            aktualny_chat["messages"].append(sprava_pouzivatela)
 
-            dostupne_modely = ziskaj_dostupne_modely()
-            
-            posledna_chyba = ""
-            uspesne = False
-            
-            for nazov_modelu in dostupne_modely:
-                try:
-                    model = genai.GenerativeModel(
-                        model_name=nazov_modelu,
-                        system_instruction=ROLY[vybrana_rola],
-                        generation_config=generation_config
+            # Odozva z Google Gemini 2.5 API
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                
+                with st.spinner("Generujem..."):
+                    tools_list = []
+                    if st.session_state.enable_web_search:
+                        tools_list.append(types.Tool(google_search=types.GoogleSearch()))
+
+                    config = types.GenerateContentConfig(
+                        system_instruction=ROLY[st.session_state.vybrana_rola],
+                        temperature=st.session_state.temperature,
+                        max_output_tokens=st.session_state.max_tokens,
+                        tools=tools_list
                     )
-                    
-                    chat = model.start_chat(history=gemini_history)
-                    response = chat.send_message(obsah_spravy, stream=True)
-                    
-                    plny_text = ""
-                    for chunk in response:
-                        plny_text += chunk.text
-                        message_placeholder.markdown(plny_text + "▌")
-                    
-                    message_placeholder.markdown(plny_text)
-                    aktualny_chat["messages"].append({"role": "assistant", "content": plny_text})
-                    uspesne = True
-                    break
-                except Exception as e:
-                    posledna_chyba = str(e)
-                    continue
 
-            if not uspesne:
-                message_placeholder.error(f"Error: {posledna_chyba}")
+                    selected_model_id = MODELE[st.session_state.vybrany_model]
+
+                    try:
+                        response_stream = client.models.generate_content_stream(
+                            model=selected_model_id,
+                            contents=parts_list,
+                            config=config
+                        )
+
+                        plny_text = ""
+                        for chunk in response_stream:
+                            if chunk.text:
+                                plny_text += chunk.text
+                                message_placeholder.markdown(plny_text + "▌")
+
+                        message_placeholder.markdown(plny_text)
+                        aktualny_chat["messages"].append({"role": "assistant", "content": plny_text})
+
+                    except Exception as e:
+                        message_placeholder.error(f"Chyba API: {e}")
+
+            st.rerun()
+
+# ==============================================================================
+# END OF PUBLIC APPLICATION (NO LOGIN)
+# ==============================================================================
