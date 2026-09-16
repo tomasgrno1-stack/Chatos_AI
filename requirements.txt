@@ -1,7 +1,8 @@
 streamlit
-google-generativeai
+google-genai
 pillow
 pypdf
 python-docx
 pandas
 openpyxl
+requests
