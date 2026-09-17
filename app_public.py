@@ -1,5 +1,5 @@
-#=============================================================================
-# CH#ATOŠ AI — Špičkový Slovenský Umelo-Inteligentný Asistent
+# =============================================================================
+# CHATOŠ AI — Špičkový Slovenský Umelo-Inteligentný Asistent
 # =============================================================================
 # Architektúra: Streamlit + Google Gemini API (google-genai SDK)
 # Jazyk a Persona: Slovenčina, Striktný Mužský rod ("urobil som", "pripravil som")
@@ -38,93 +38,106 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# 0. Inteligentná Detekcia API Kľúča — Všetky Názvy a Sekcie v Secrets
+# 0. Inteligentná Detekcia a Rotácia Viacerých API Kľúčov zo Secrets
 # -----------------------------------------------------------------------------
-# Ak nechceš nič nastavovať v Streamlit Secrets, môžeš svoj kľúč vložiť sem:
+# Ak chceš kľúče vložiť priamo do kódu, môžeš sem zadať jeden alebo viac:
 HARDCODED_API_KEY = ""
 
-def extract_key_from_obj(obj: Any, depth: int = 0) -> Optional[str]:
-    """Rekurzívne hľadá API kľúč v ľubovoľnom objekte (dict, secrets, list, str)."""
-    if obj is None or depth > 5:
-        return None
-        
-    # Ak je to priamo reťazec
-    if isinstance(obj, str):
-        cleaned = obj.strip().strip('"').strip("'")
-        if cleaned.startswith("AIza") and len(cleaned) >= 30:
-            return cleaned
-        return None
+def extract_all_keys_from_obj(obj: Any, depth: int = 0) -> List[str]:
+    """Rekurzívne nájde všetky API kľúče (zoznamy, čiarkami oddelené reťazce, slovníky)."""
+    keys = []
+    if obj is None or depth > 6:
+        return keys
 
-    # Ak je to dict-like (st.secrets, AttrDict, dict)
+    # Ak je to priamo string (môže byť jeden kľúč alebo viacero oddelených čiarkou/novým riadkom)
+    if isinstance(obj, str):
+        parts = re.split(r'[,;\n\r\t]+', obj)
+        for p in parts:
+            cleaned = p.strip().strip('"').strip("'")
+            if cleaned.startswith("AIza") and len(cleaned) >= 28:
+                keys.append(cleaned)
+            elif len(cleaned) >= 35 and re.match(r'^[A-Za-z0-9_-]+$', cleaned):
+                keys.append(cleaned)
+        return keys
+
+    # Ak je to zoznam alebo tuple (napr. GEMINI_API_KEYS = ["AIza...", "AIza..."])
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            keys.extend(extract_all_keys_from_obj(item, depth + 1))
+        return keys
+
+    # Ak je to dict-like (st.secrets, AttrDict, konfigurácie)
     if isinstance(obj, dict) or hasattr(obj, "items") or hasattr(obj, "keys"):
-        candidates = [
-            "gemini_api_key", "google_api_key", "gemini", "google",
-            "api_key", "apikey", "gemini_key", "google_key", "geminikey",
-            "googleapikey", "ai_key", "aistudio_key", "key", "gemini_secret"
-        ]
-        
         try:
             items = list(obj.items())
         except Exception:
             items = []
 
-        # 1. Krok: Presná alebo normalizovaná zhoda názvu kľúča
         for k, v in items:
-            k_norm = str(k).lower().strip().replace("-", "_").replace(" ", "_")
-            if k_norm in candidates:
-                if isinstance(v, str):
-                    val = v.strip().strip('"').strip("'")
-                    if val and len(val) >= 20:
-                        return val
-                elif isinstance(v, (dict, list)) or hasattr(v, "items"):
-                    res = extract_key_from_obj(v, depth + 1)
-                    if res:
-                        return res
-
-        # 2. Krok: Názov kľúča obsahuje 'gemini' alebo 'google'
-        for k, v in items:
-            k_norm = str(k).lower()
-            if any(t in k_norm for t in ["gemini", "google", "apikey", "api_key"]):
-                if isinstance(v, str):
-                    val = v.strip().strip('"').strip("'")
-                    if val and len(val) >= 20:
-                        return val
-                elif isinstance(v, (dict, list)) or hasattr(v, "items"):
-                    res = extract_key_from_obj(v, depth + 1)
-                    if res:
-                        return res
-
-        # 3. Krok: Akákoľvek hodnota kdekoľvek začínajúca na AIza (štandardný formát Google kľúčov)
-        for k, v in items:
+            k_lower = str(k).lower().strip()
+            # Ak hodnota je priamo string alebo štruktúra
             if isinstance(v, str):
-                val = v.strip().strip('"').strip("'")
-                if val.startswith("AIza") and len(val) >= 30:
-                    return val
-            elif isinstance(v, (dict, list)) or hasattr(v, "items"):
-                res = extract_key_from_obj(v, depth + 1)
-                if res:
-                    return res
+                parts = re.split(r'[,;\n\r\t]+', v)
+                for p in parts:
+                    cleaned = p.strip().strip('"').strip("'")
+                    if cleaned.startswith("AIza") and len(cleaned) >= 28:
+                        keys.append(cleaned)
+                    elif any(t in k_lower for t in ["gemini", "google", "api_key", "apikey", "key"]) and len(cleaned) >= 20:
+                        keys.append(cleaned)
+            else:
+                keys.extend(extract_all_keys_from_obj(v, depth + 1))
 
-        # 4. Krok: Ak je len 1 hodnota a má dĺžku nad 25 znakov bez medzier
-        if len(items) == 1 and isinstance(items[0][1], str):
-            val = items[0][1].strip().strip('"').strip("'")
-            if len(val) >= 25 and " " not in val:
-                return val
+    return keys
 
-    # Ak je to zoznam
-    if isinstance(obj, (list, tuple)):
-        for item in obj:
-            res = extract_key_from_obj(item, depth + 1)
-            if res:
-                return res
+def get_all_gemini_api_keys() -> List[str]:
+    """Automaticky získa všetky platné unikátne Gemini API kľúče z ľubovoľného zdroja."""
+    collected = []
 
-    return None
+    # 1. Zadané v relácii (session state)
+    if "session_api_key" in st.session_state and st.session_state["session_api_key"].strip():
+        collected.extend(extract_all_keys_from_obj(st.session_state["session_api_key"]))
+
+    # 2. Z hardcoded premennej v kóde
+    if HARDCODED_API_KEY:
+        collected.extend(extract_all_keys_from_obj(HARDCODED_API_KEY))
+
+    # 3. Zo systémových premenných prostredia
+    for env_var in [
+        "GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY", "API_KEYS", 
+        "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"
+    ]:
+        env_val = os.environ.get(env_var, "")
+        if env_val:
+            collected.extend(extract_all_keys_from_obj(env_val))
+
+    # 4. Zo Streamlit Secrets (hĺbková detekcia zoznamov aj jednotlivých kľúčov)
+    try:
+        if hasattr(st, "secrets"):
+            collected.extend(extract_all_keys_from_obj(st.secrets))
+    except Exception:
+        pass
+
+    # Odstránenie duplicít so zachovaním poradia
+    unique_keys = []
+    seen = set()
+    for k in collected:
+        if k and k not in seen:
+            seen.add(k)
+            unique_keys.append(k)
+
+    return unique_keys
+
+def get_gemini_api_key() -> str:
+    """Vráti primárny kľúč (alebo prázdny reťazec, ak žiaden neexistuje)."""
+    keys = get_all_gemini_api_keys()
+    return keys[0] if keys else ""
 
 def inspect_secrets_structure() -> Dict[str, Any]:
     """Zistí bezpečne aké kľúče a sekcie sa nachádzajú v st.secrets bez odhalenia tajomstiev."""
     diagnostics = {
         "has_secrets": False,
         "keys_found": [],
+        "total_api_keys_loaded": len(get_all_gemini_api_keys()),
         "error": None
     }
     try:
@@ -138,33 +151,6 @@ def inspect_secrets_structure() -> Dict[str, Any]:
     except Exception as e:
         diagnostics["error"] = str(e)
     return diagnostics
-
-def get_gemini_api_key() -> str:
-    """Automaticky a spoľahlivo načíta Gemini API kľúč z akéhokoľvek zdroja."""
-    # 1. Zadaný v relácii (session state fallback)
-    if "session_api_key" in st.session_state and st.session_state["session_api_key"].strip():
-        return st.session_state["session_api_key"].strip()
-
-    # 2. Z hardcoded premennej v kóde (ak je vyplnená)
-    if HARDCODED_API_KEY.strip():
-        return HARDCODED_API_KEY.strip()
-    
-    # 3. Z premenných prostredia (rôzne aliasy)
-    for env_var in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "API_KEY", "GEMINI_KEY"]:
-        env_val = os.environ.get(env_var, "")
-        if env_val and env_val.strip():
-            return env_val.strip()
-    
-    # 4. Zo Streamlit Secrets (hĺbková kontrola všetkých sekcií a formátov)
-    try:
-        if hasattr(st, "secrets"):
-            found_sec = extract_key_from_obj(st.secrets)
-            if found_sec:
-                return found_sec
-    except Exception:
-        pass
-    
-    return ""
 
 # -----------------------------------------------------------------------------
 # 2. Prémiový Dizajn (Obsidian, Cyan & Indigo Cyber-Aesthetics)
@@ -383,6 +369,7 @@ if "active_conv_id" not in st.session_state:
         "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
         "messages": [],
         "mode": "nova",
+        "model": "gemini-3.8-flash",
         "web_search": False,
         "artifact": None
     }
@@ -401,6 +388,7 @@ if active_id not in st.session_state.conversations:
         "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
         "messages": [],
         "mode": "nova",
+        "model": "gemini-3.8-flash",
         "web_search": False,
         "artifact": None
     }
@@ -434,32 +422,86 @@ def clean_thought_tags(raw_text: str):
         return thought_match.group(1).strip(), re.sub(r"<thought>[\s\S]*?</thought>", "", raw_text).strip()
     return None, raw_text
 
-def execute_gemini_stream(client: genai.Client, selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool):
+def robust_stream_generator(api_keys: List[str], selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool):
+    """
+    Robustný streamovací generátor.
+    Pri chybe 503 UNAVAILABLE (Google hlási: 'This model is currently experiencing high demand')
+    alebo 429 RESOURCE_EXHAUSTED automaticky:
+    1. Prepína medzi dostupnými API kľúčmi (pri kvóte 429).
+    2. Okamžite prepína na stabilný záložný model gemini-2.5-flash (pri preťažení 503).
+    """
     models_sequence = [selected_model, "gemini-2.5-flash", "gemini-2.0-flash"]
     seen = set()
     models_to_try = [m for m in models_sequence if not (m in seen or seen.add(m))]
     tools = [{"google_search": {}}] if web_search_enabled else None
 
-    for model_name in models_to_try:
-        try:
-            stream = client.models.generate_content_stream(
-                model=model_name,
-                contents=api_contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    tools=tools,
-                    temperature=0.7
-                )
-            )
-            return stream, model_name, None
-        except Exception as e:
-            if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                time.sleep(1)
-                continue
-            else:
-                return None, model_name, str(e)
+    errors_logged = []
 
-    return None, None, "Kvóta API kľúča je prečerpaná (Chyba 429)."
+    for model_idx, model_name in enumerate(models_to_try):
+        for key_idx, key in enumerate(api_keys):
+            try:
+                client = genai.Client(api_key=key)
+                stream = client.models.generate_content_stream(
+                    model=model_name,
+                    contents=api_contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        tools=tools,
+                        temperature=0.7
+                    )
+                )
+
+                # Overíme, či model odpovedá (chyba 503 sa často vyvolá pri prvom chunku)
+                stream_iter = iter(stream)
+                try:
+                    first_chunk = next(stream_iter)
+                except StopIteration:
+                    return
+                except Exception as chunk_exc:
+                    err_msg = str(chunk_exc)
+                    errors_logged.append(f"{model_name} (kľúč #{key_idx+1}): {err_msg}")
+                    err_lower = err_msg.lower()
+
+                    # 503 UNAVAILABLE: Model má vysoký dopyt na serveroch Google
+                    if "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
+                        # Preťaženie modelu je globálne na strane Google -> okamžite skúsime iný model
+                        break
+                    # 429 RESOURCE_EXHAUSTED: Kvóta kľúča
+                    elif "429" in err_lower or "resource_exhausted" in err_lower:
+                        # Skúsime ďalší API kľúč
+                        continue
+                    else:
+                        if key_idx < len(api_keys) - 1:
+                            continue
+                        else:
+                            break
+
+                # Ak sme úspešne získali prvý chunk:
+                fallback_note = None
+                if model_idx > 0 and model_name != selected_model:
+                    fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne preťažený (503 High Demand). Odpoveď bola automaticky a plynulo doručená cez záložný model `{model_name}`."
+
+                yield ("chunk", first_chunk, model_name, fallback_note)
+                for chunk in stream_iter:
+                    yield ("chunk", chunk, model_name, None)
+                return
+
+            except Exception as conn_exc:
+                err_msg = str(conn_exc)
+                errors_logged.append(f"{model_name} (kľúč #{key_idx+1}): {err_msg}")
+                err_lower = err_msg.lower()
+                if "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
+                    break
+                elif "429" in err_lower or "resource_exhausted" in err_lower:
+                    continue
+                else:
+                    if key_idx < len(api_keys) - 1:
+                        continue
+                    else:
+                        break
+
+    last_err = errors_logged[-1] if errors_logged else "Neznáma chyba spojenia"
+    yield ("error", None, None, f"Všetky pokusy zlyhali ({len(models_to_try)} modely, {len(api_keys)} kľúče). Posledná hlásená chyba: {last_err}")
 
 # -----------------------------------------------------------------------------
 # 6. Bočný Panel: Nástroje a Nastavenia (BEZ OTÁZOK NA API KĽÚČ)
@@ -485,6 +527,7 @@ with st.sidebar:
             "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
             "messages": [],
             "mode": current_conv.get("mode", "nova"),
+            "model": current_conv.get("model", "gemini-3.8-flash"),
             "web_search": current_conv.get("web_search", False),
             "artifact": None
         }
@@ -497,16 +540,20 @@ with st.sidebar:
     st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
     available_models = {
-        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Najrýchlejší)",
-        "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Najnovší)",
+        "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Predvolený & Najnovší)",
+        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Rýchly)",
         "gemini-2.5-pro": "🧠 Gemini 2.5 Pro (Hĺbková logika)"
     }
+    model_keys = list(available_models.keys())
+    saved_model = current_conv.get("model", "gemini-3.8-flash")
+    default_model_idx = model_keys.index(saved_model) if saved_model in model_keys else 0
     selected_model = st.selectbox(
         "Model Gemini:",
-        options=list(available_models.keys()),
+        options=model_keys,
         format_func=lambda m: available_models[m],
-        index=0
+        index=default_model_idx
     )
+    current_conv["model"] = selected_model
 
     mode_titles = {
         "nova": "⚡ Chatoš Nova (Všestranný)",
@@ -556,13 +603,24 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Zobrazenie stavu pripojenia API kľúča
-    current_key_check = get_gemini_api_key()
-    if current_key_check:
-        st.markdown("""
-        <div style='display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #0c121e; border: 1px solid #1a263c; border-radius: 10px;'>
-            <div style='width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;'></div>
-            <span style='font-size: 12px; font-family: monospace; color: #38bdf8;'>Chatoš AI je pripojený</span>
+    # Zobrazenie stavu pripojenia API kľúča (s podporou viacerých kľúčov)
+    all_keys_list = get_all_gemini_api_keys()
+    if all_keys_list:
+        k_count = len(all_keys_list)
+        if k_count == 1:
+            k_badge_text = "1 API kľúč aktívny"
+        elif k_count in [2, 3, 4]:
+            k_badge_text = f"{k_count} API kľúče (Auto-rotácia)"
+        else:
+            k_badge_text = f"{k_count} API kľúčov (Auto-rotácia)"
+
+        st.markdown(f"""
+        <div style='display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: #0c121e; border: 1px solid #1a263c; border-radius: 10px;'>
+            <div style='display: flex; align-items: center; gap: 8px;'>
+                <div style='width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;'></div>
+                <span style='font-size: 12px; font-family: monospace; color: #38bdf8;'>Chatoš AI je pripojený</span>
+            </div>
+            <span style='font-size: 10.5px; font-family: monospace; color: #10b981; background: #052e24; border: 1px solid #0f766e; padding: 1px 7px; border-radius: 6px;'>{k_badge_text}</span>
         </div>
         """, unsafe_allow_html=True)
     else:
@@ -607,10 +665,11 @@ with header_right:
     has_artifact = st.session_state.active_artifact is not None
     badge_col, toggle_col = st.columns([1, 1])
     with badge_col:
+        model_display = current_conv.get('model', 'gemini-3.8-flash').replace('gemini-', '').replace('-flash', '').upper()
         st.markdown(f"""
         <div style='text-align: right; padding-top: 6px;'>
             <span style='background: #101626; border: 1px solid #1f2a40; color: #38bdf8; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-family: monospace;'>
-                CHATOŠ &middot; {m_name}
+                CHATOŠ &middot; {m_name} &middot; {model_display}
             </span>
         </div>
         """, unsafe_allow_html=True)
@@ -807,7 +866,7 @@ if active_prompt:
                 st.image(saved_image_bytes, width=260)
             st.markdown(active_prompt)
 
-    genai_client = genai.Client(api_key=current_key)
+    all_available_keys = get_all_gemini_api_keys()
 
     with chat_viewport:
         with st.chat_message("assistant", avatar="🤖"):
@@ -817,41 +876,68 @@ if active_prompt:
 
             formatted_contents = []
             for msg_item in messages:
+                raw_text = msg_item.get("content", "")
+                # Ignorujeme prerušené chybové hlásenia z predchádzajúcich pokusov
+                if "Generovanie prerušené:" in raw_text or "🛑 Chyba" in raw_text:
+                    continue
                 parts = []
                 if msg_item.get("image_bytes"):
                     parts.append(types.Part.from_bytes(data=msg_item["image_bytes"], mime_type="image/png"))
-                if msg_item.get("content"):
-                    parts.append(types.Part.from_text(text=msg_item["content"]))
-                formatted_contents.append(types.Content(role="model" if msg_item["role"] == "assistant" else "user", parts=parts))
+                if raw_text:
+                    parts.append(types.Part.from_text(text=raw_text))
+                if parts:
+                    formatted_contents.append(types.Content(role="model" if msg_item["role"] == "assistant" else "user", parts=parts))
 
             active_instruction = SYSTEM_PROMPTS.get(current_conv.get("mode", "nova"), SYSTEM_PROMPTS["nova"])
 
-            stream_result, used_model, stream_error = execute_gemini_stream(
-                client=genai_client,
+            generator = robust_stream_generator(
+                api_keys=all_available_keys,
                 selected_model=selected_model,
                 api_contents=formatted_contents,
                 system_instruction=active_instruction,
                 web_search_enabled=current_conv.get("web_search", False)
             )
 
-            if stream_result is not None:
-                try:
-                    for chunk in stream_result:
-                        if chunk.candidates and chunk.candidates[0].grounding_metadata:
-                            meta = chunk.candidates[0].grounding_metadata
-                            if meta.grounding_chunks:
-                                for c in meta.grounding_chunks:
-                                    if c.web and c.web.uri:
-                                        grounded_sources.append({"title": c.web.title or "Zdroj", "url": c.web.uri})
+            success = False
+            active_fallback_notice = None
 
-                        if chunk.text:
-                            accumulated_response += chunk.text
-                            response_placeholder.markdown(accumulated_response + " ▌")
-                except Exception as stream_err:
-                    accumulated_response += f"\n\n*(Generovanie prerušené: {stream_err})*"
+            for event_type, chunk_data, used_model, extra_info in generator:
+                if event_type == "chunk":
+                    success = True
+                    if extra_info:
+                        active_fallback_notice = extra_info
 
+                    chunk = chunk_data
+                    if chunk.candidates and chunk.candidates[0].grounding_metadata:
+                        meta = chunk.candidates[0].grounding_metadata
+                        if meta.grounding_chunks:
+                            for c in meta.grounding_chunks:
+                                if c.web and c.web.uri:
+                                    grounded_sources.append({"title": c.web.title or "Zdroj", "url": c.web.uri})
+
+                    if chunk.text:
+                        accumulated_response += chunk.text
+                        response_placeholder.markdown(accumulated_response + " ▌")
+
+                elif event_type == "error":
+                    response_placeholder.empty()
+                    st.error(f"""
+                    🛑 **Chyba spojenia: {extra_info}**
+                    
+                    1. ⏳ **Google servery majú dočasný výpadok/preťaženie.** Počkaj pár sekúnd a pošli správu znova.
+                    2. ⚡ V bočnom paneli zvoľ model **Gemini 2.5 Flash** (má najvyššiu a najstabilnejšiu globálnu dostupnosť).
+                    """)
+                    if messages and messages[-1]["role"] == "user":
+                        messages.pop()
+                    st.stop()
+
+            if success and accumulated_response.strip():
                 final_thought, final_text = clean_thought_tags(accumulated_response)
                 response_placeholder.empty()
+
+                if active_fallback_notice:
+                    st.info(active_fallback_notice)
+
                 if final_thought:
                     with st.expander("🧠 Proces uvažovania Chatoša (Thinking Process)", expanded=False):
                         st.markdown(f"```text\n{final_thought}\n```")
@@ -873,13 +959,3 @@ if active_prompt:
                     st.rerun()
 
                 messages.append({"role": "assistant", "content": accumulated_response, "sources": grounded_sources})
-            else:
-                response_placeholder.empty()
-                st.error(f"""
-                🛑 **Chyba: {stream_error}**
-                
-                1. ⏳ **Počkaj 30–60 sekúnd** (minútový limit bezplatného API sa resetuje).
-                2. ⚡ V bočnom paneli zvoľ model **Gemini 2.5 Flash** (má najvyššiu priepustnosť).
-                """)
-                if messages and messages[-1]["role"] == "user":
-                    messages.pop()
