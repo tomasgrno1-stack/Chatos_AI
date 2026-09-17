@@ -1,6 +1,6 @@
 # ✨ Chatoš — Personal AI Assistant
 
-Polaris is a modern web application built with **Streamlit** and **Google Gemini API**, functioning as an intelligent personal assistant.
+Chatoš is a modern web application built with **Streamlit** and **Google Gemini API**, functioning as an intelligent personal assistant.
 
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat&logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-FF4B4B?style=flat&logo=streamlit&logoColor=white)
