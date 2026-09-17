@@ -1,4 +1,4 @@
-# ✨ Polaris — Personal AI Assistant
+# ✨ Chatoš — Personal AI Assistant
 
 Polaris is a modern web application built with **Streamlit** and **Google Gemini API**, functioning as an intelligent personal assistant.
 
@@ -16,4 +16,4 @@ Polaris is a modern web application built with **Streamlit** and **Google Gemini
 * **Chat History Management:** Ability to create new conversations, rename them, or delete individual chats.
 * **Modern Dark Glassmorphism UI:** Stylish dark interface with custom animations and a personalized scrollbar.
 
-Here is link to see ✨Polaris AI: https://polaris--ai.streamlit.app/
+Here is link to see ✨Chatoš AI: https://polaris--ai.streamlit.app/
