@@ -381,6 +381,13 @@ if "active_artifact" not in st.session_state:
 if "show_canvas" not in st.session_state:
     st.session_state.show_canvas = False
 
+if "user_profile" not in st.session_state:
+    st.session_state.user_profile = {
+        "user_name": "",
+        "user_role": "",
+        "custom_instructions": ""
+    }
+
 active_id = st.session_state.active_conv_id
 if active_id not in st.session_state.conversations:
     st.session_state.conversations[active_id] = {
@@ -421,6 +428,47 @@ def clean_thought_tags(raw_text: str):
     if thought_match:
         return thought_match.group(1).strip(), re.sub(r"<thought>[\s\S]*?</thought>", "", raw_text).strip()
     return None, raw_text
+
+def generate_smart_title(user_text: str) -> str:
+    """Vytvorí výstižný, krátky 2-5 slovný názov konverzácie bez uvádzacích fráz."""
+    clean = re.sub(
+        r'^(ahoj|čau|prosím|vedel by si|chcel by som|chcem|povedz mi|vysvetli|napíš|sprav|vytvor|ukáž|ako|prečo|čo je|aký je)\s+',
+        '',
+        user_text.strip(),
+        flags=re.IGNORECASE
+    ).strip()
+    if len(clean) < 3:
+        clean = user_text.strip()
+    first_line = clean.split("\n")[0]
+    words = first_line.split()
+    if len(words) > 5:
+        smart = " ".join(words[:5]) + "..."
+    else:
+        smart = first_line[:32]
+    return smart[:32].capitalize() if smart else "Konverzácia"
+
+def generate_conversation_markdown(conv: Dict[str, Any]) -> str:
+    """Vygeneruje čistý, formátovaný Markdown dokument z celej konverzácie."""
+    title = conv.get("title", "Konverzácia Chatoš AI")
+    created = conv.get("created_at", "")
+    model = conv.get("model", "gemini-3.8-flash")
+    mode = conv.get("mode", "nova")
+
+    lines = [
+        f"# {title}",
+        f"*{created} | Model: {model} | Režim: Chatoš {mode.capitalize()}*",
+        "",
+        "---",
+        ""
+    ]
+    for msg in conv.get("messages", []):
+        role_title = "👤 Používateľ" if msg.get("role") == "user" else "🤖 Chatoš AI"
+        lines.append(f"### {role_title}\n")
+        if msg.get("file_name"):
+            lines.append(f"📎 *Priložený súbor: {msg['file_name']}*\n")
+        lines.append(msg.get("content", "").strip())
+        lines.append("\n\n---\n")
+    return "\n".join(lines)
 
 def robust_stream_generator(api_keys: List[str], selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool):
     """
@@ -572,23 +620,47 @@ with st.sidebar:
     web_grounding = st.toggle("🌐 Google Search Grounding", value=current_conv.get("web_search", False))
     current_conv["web_search"] = web_grounding
 
+    with st.expander("🧠 Osobný profil a pamäť", expanded=False):
+        st.caption("Chatoš si tieto informácie zapamätá a prispôsobí im svoje odpovede vo všetkých četoch.")
+        p_name = st.text_input("Tvoje meno:", value=st.session_state.user_profile.get("user_name", ""), placeholder="napr. Rado", key="prof_name_in")
+        p_role = st.text_input("Profesia / zameranie:", value=st.session_state.user_profile.get("user_role", ""), placeholder="napr. Python programátor, študent...", key="prof_role_in")
+        p_instr = st.text_area("Inštrukcie pre štýl odpovedí:", value=st.session_state.user_profile.get("custom_instructions", ""), placeholder="napr. Odpovedaj stručne a vecne, píš príklady kódu...", key="prof_instr_in", height=80)
+        st.session_state.user_profile["user_name"] = p_name
+        st.session_state.user_profile["user_role"] = p_role
+        st.session_state.user_profile["custom_instructions"] = p_instr
+
     attached_file = st.file_uploader(
-        "📎 Priložiť obrázok alebo kód:",
-        type=["png", "jpg", "jpeg", "webp", "txt", "py", "js", "html", "css", "json", "md"]
+        "📎 Priložiť súbor (PDF, Obrázok, Kód, CSV):",
+        type=["png", "jpg", "jpeg", "webp", "pdf", "txt", "py", "js", "html", "css", "json", "md", "csv"]
     )
 
     st.markdown("---")
     st.markdown("<div style='font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; font-family: monospace; margin-bottom: 8px;'>História Konverzácií</div>", unsafe_allow_html=True)
     
+    search_query = st.text_input("🔍 Hľadať...", placeholder="Hľadať v správach...", label_visibility="collapsed", key="search_chats_input")
+
     sorted_ids = sorted(st.session_state.conversations.keys(), key=lambda x: int(x.split("_")[1]) if "_" in x else 0, reverse=True)
 
-    for cid in sorted_ids:
+    if search_query.strip():
+        q_lower = search_query.strip().lower()
+        filtered_ids = [
+            cid for cid in sorted_ids
+            if q_lower in st.session_state.conversations[cid].get("title", "").lower()
+            or any(q_lower in m.get("content", "").lower() for m in st.session_state.conversations[cid].get("messages", []))
+        ]
+    else:
+        filtered_ids = sorted_ids
+
+    if search_query.strip() and not filtered_ids:
+        st.caption("Žiadna konverzácia nezodpovedá hľadaniu.")
+
+    for cid in filtered_ids:
         c_data = st.session_state.conversations[cid]
         is_current = (cid == active_id)
         chat_col, del_col = st.columns([8, 2])
         with chat_col:
             prefix = "🤖 " if is_current else "💬 "
-            display_title = c_data["title"][:22] + ("..." if len(c_data["title"]) > 22 else "")
+            display_title = c_data["title"][:20] + ("..." if len(c_data["title"]) > 20 else "")
             if st.button(f"{prefix}{display_title}", key=f"nav_{cid}", use_container_width=True):
                 st.session_state.active_conv_id = cid
                 st.session_state.active_artifact = c_data.get("artifact", None)
@@ -637,17 +709,27 @@ with st.sidebar:
                     st.session_state["session_api_key"] = manual_key_val.strip()
                     st.rerun()
 
-    exp_col1, exp_col2 = st.columns(2)
+    exp_col1, exp_col2, exp_col3 = st.columns(3)
     with exp_col1:
         st.download_button(
-            label="📥 Export JSON",
+            label="📥 JSON",
             data=json.dumps(current_conv, indent=2, ensure_ascii=False),
             file_name=f"chatos_{active_id}.json",
             mime="application/json",
-            use_container_width=True
+            use_container_width=True,
+            help="Stiahnuť konverzáciu v JSON formáte"
         )
     with exp_col2:
-        if st.button("🧹 Vymazať správy", use_container_width=True):
+        st.download_button(
+            label="📝 .MD",
+            data=generate_conversation_markdown(current_conv),
+            file_name=f"chatos_{active_id}.md",
+            mime="text/markdown",
+            use_container_width=True,
+            help="Stiahnuť ako čistý Markdown dokument"
+        )
+    with exp_col3:
+        if st.button("🧹 Zmazať", use_container_width=True, help="Vymazať správy aktuálneho četu"):
             current_conv["messages"] = []
             current_conv["artifact"] = None
             st.session_state.active_artifact = None
@@ -733,6 +815,12 @@ with chat_viewport:
         with st.chat_message(role, avatar="🤖" if is_bot else None):
             if msg.get("image_bytes"):
                 st.image(msg["image_bytes"], width=260)
+            if msg.get("pdf_bytes") or (msg.get("file_name") and msg.get("file_name", "").lower().endswith(".pdf")):
+                f_name = msg.get("file_name", "Dokument.pdf")
+                st.markdown(f"<div style='display:inline-flex; align-items:center; gap:8px; background:#1e293b; border:1px solid #38bdf8; padding:6px 14px; border-radius:8px; margin-bottom:10px;'><span style='font-size:18px;'>📄</span><span style='font-size:13px; font-weight:600; color:#38bdf8;'>Priložený PDF dokument: {f_name}</span></div>", unsafe_allow_html=True)
+            elif msg.get("file_name") and not msg.get("image_bytes"):
+                f_name = msg.get("file_name")
+                st.markdown(f"<div style='display:inline-flex; align-items:center; gap:8px; background:#1e293b; border:1px solid #475569; padding:5px 12px; border-radius:8px; margin-bottom:8px;'><span style='font-size:16px;'>📎</span><span style='font-size:12px; font-weight:500; color:#94a3b8;'>{f_name}</span></div>", unsafe_allow_html=True)
                 
             content = msg["content"]
             thought, final_answer = clean_thought_tags(content)
@@ -758,6 +846,29 @@ with chat_viewport:
                     st.session_state.show_canvas = True
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
+
+            # Panel rýchlych akcií pod odpoveďou asistenta
+            if is_bot and content.strip() and not content.startswith("🛑"):
+                st.markdown("<div style='margin-top: 12px; margin-bottom: 4px;'></div>", unsafe_allow_html=True)
+                qa_c1, qa_c2, qa_c3, qa_c4 = st.columns([1.1, 1.1, 1.3, 1.4])
+                with qa_c1:
+                    if st.button("📋 Kopírovať", key=f"btn_copy_{idx}", help="Zobraziť čistý text na kopírovanie"):
+                        st.session_state[f"show_copy_{idx}"] = not st.session_state.get(f"show_copy_{idx}", False)
+                with qa_c2:
+                    if st.button("⚡ Zhrnúť", key=f"btn_sum_{idx}", help="Zhrnúť odpoveď do 3 kľúčových bodov"):
+                        st.session_state.auto_prompt = "Zhrň svoju predchádzajúcu odpoveď do 3 stručných a najdôležitejších bodov."
+                        st.rerun()
+                with qa_c3:
+                    if st.button("💡 Zjednodušiť", key=f"btn_simp_{idx}", help="Vysvetliť jednoducho pre začiatočníka"):
+                        st.session_state.auto_prompt = "Vysvetli svoju predchádzajúcu odpoveď ešte jednoduchšie a priateľskejšie, ako pre úplného začiatočníka."
+                        st.rerun()
+                with qa_c4:
+                    if st.button("❓ Minikvíz", key=f"btn_quiz_{idx}", help="3 otázky na overenie pochopenia"):
+                        st.session_state.auto_prompt = "Priprav mi 3 krátke otázky alebo minikvíz k tomu, čo si práve vysvetlil, aby som si preveril vedomosti."
+                        st.rerun()
+
+                if st.session_state.get(f"show_copy_{idx}", False):
+                    st.code(final_answer, language="markdown")
 
 # -----------------------------------------------------------------------------
 # 10. Živý Canvas
@@ -848,22 +959,43 @@ if active_prompt:
         st.stop()
 
     saved_image_bytes = None
+    saved_pdf_bytes = None
+    saved_file_name = None
+
     if attached_file is not None:
         raw_bytes = attached_file.getvalue()
-        if attached_file.type.startswith("image/"):
+        saved_file_name = attached_file.name
+        f_type = attached_file.type or ""
+        f_name_lower = attached_file.name.lower()
+
+        if f_type.startswith("image/") or f_name_lower.endswith((".png", ".jpg", ".jpeg", ".webp")):
             saved_image_bytes = raw_bytes
+        elif f_type == "application/pdf" or f_name_lower.endswith(".pdf"):
+            saved_pdf_bytes = raw_bytes
         else:
             decoded = raw_bytes.decode("utf-8", errors="ignore")
-            active_prompt = f"{active_prompt}\n\n--- Priložený súbor ({attached_file.name}) ---\n{decoded}"
+            active_prompt = f"{active_prompt}\n\n--- Priložený dokument ({attached_file.name}) ---\n{decoded}"
 
-    messages.append({"role": "user", "content": active_prompt, "image_bytes": saved_image_bytes})
-    if len(messages) == 1:
-        current_conv["title"] = active_prompt[:25] + ("..." if len(active_prompt) > 25 else "")
+    messages.append({
+        "role": "user",
+        "content": active_prompt,
+        "image_bytes": saved_image_bytes,
+        "pdf_bytes": saved_pdf_bytes,
+        "file_name": saved_file_name
+    })
+
+    # Inteligentný AI názov konverzácie
+    if len(messages) <= 2 or current_conv.get("title", "") in ["Nová konverzácia", ""]:
+        current_conv["title"] = generate_smart_title(active_prompt)
 
     with chat_viewport:
         with st.chat_message("user"):
             if saved_image_bytes:
                 st.image(saved_image_bytes, width=260)
+            if saved_pdf_bytes:
+                st.markdown(f"<div style='display:inline-flex; align-items:center; gap:8px; background:#1e293b; border:1px solid #38bdf8; padding:6px 14px; border-radius:8px; margin-bottom:10px;'><span style='font-size:18px;'>📄</span><span style='font-size:13px; font-weight:600; color:#38bdf8;'>Priložený PDF dokument: {saved_file_name}</span></div>", unsafe_allow_html=True)
+            elif saved_file_name and not saved_image_bytes:
+                st.markdown(f"<div style='display:inline-flex; align-items:center; gap:8px; background:#1e293b; border:1px solid #475569; padding:5px 12px; border-radius:8px; margin-bottom:8px;'><span style='font-size:16px;'>📎</span><span style='font-size:12px; font-weight:500; color:#94a3b8;'>{saved_file_name}</span></div>", unsafe_allow_html=True)
             st.markdown(active_prompt)
 
     all_available_keys = get_all_gemini_api_keys()
@@ -883,12 +1015,24 @@ if active_prompt:
                 parts = []
                 if msg_item.get("image_bytes"):
                     parts.append(types.Part.from_bytes(data=msg_item["image_bytes"], mime_type="image/png"))
+                if msg_item.get("pdf_bytes"):
+                    parts.append(types.Part.from_bytes(data=msg_item["pdf_bytes"], mime_type="application/pdf"))
                 if raw_text:
                     parts.append(types.Part.from_text(text=raw_text))
                 if parts:
                     formatted_contents.append(types.Content(role="model" if msg_item["role"] == "assistant" else "user", parts=parts))
 
-            active_instruction = SYSTEM_PROMPTS.get(current_conv.get("mode", "nova"), SYSTEM_PROMPTS["nova"])
+            # Zakomponovanie profilu a trvalej pamäte používateľa do systémových inštrukcií
+            user_memory_parts = []
+            if st.session_state.user_profile.get("user_name"):
+                user_memory_parts.append(f"Používateľ sa volá {st.session_state.user_profile['user_name']}.")
+            if st.session_state.user_profile.get("user_role"):
+                user_memory_parts.append(f"Profesia/zameranie používateľa: {st.session_state.user_profile['user_role']}.")
+            if st.session_state.user_profile.get("custom_instructions"):
+                user_memory_parts.append(f"Trvalé osobné inštrukcie a preferencie pre odpovede: {st.session_state.user_profile['custom_instructions']}.")
+
+            memory_prompt = ("\n\nPOUŽÍVATEĽSKÝ PROFIL A PREFERENCIE: " + " ".join(user_memory_parts)) if user_memory_parts else ""
+            active_instruction = SYSTEM_PROMPTS.get(current_conv.get("mode", "nova"), SYSTEM_PROMPTS["nova"]) + memory_prompt
 
             generator = robust_stream_generator(
                 api_keys=all_available_keys,
@@ -959,3 +1103,4 @@ if active_prompt:
                     st.rerun()
 
                 messages.append({"role": "assistant", "content": accumulated_response, "sources": grounded_sources})
+                st.rerun()
