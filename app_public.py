@@ -4,13 +4,14 @@
 # Architektúra: Streamlit + Google Gemini API (google-genai SDK)
 # Jazyk a Persona: Slovenčina, Striktný Mužský rod ("urobil som", "pripravil som")
 # Funkcie:
+#   - ŽIADNE zadávanie API kľúča v rozhraní (automatické načítanie bez obťažovania)
 #   - ChatGPT-like Obsidian Cyberpunk luxusný tmavý vizuál
 #   - Živý Interaktívny Sandbox / Canvas (HTML, CSS, JS, SVG)
 #   - Transparentné hĺbkové uvažovanie (Thinking Process v expanderi)
 #   - Google Web Search Grounding s klikateľnými zdrojmi
 #   - Multimodálne vstupy: Obrázky (Vision) a Kódové súbory
 #   - Automatická ochrana pred 429 (Exponential Backoff & Fallback modely)
-#   - Správa histórie chatov (Vytváranie, Premenovanie, Zmazanie, Export do JSON/MD)
+#   - Správa histórie chatov (Vytváranie, Premenovanie, Zmazanie, Export)
 # =============================================================================
 
 import os
@@ -25,6 +26,37 @@ import streamlit as st
 import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
+
+# -----------------------------------------------------------------------------
+# 0. Nastavenie API Kľúča — NEMUSÍŠ HO ZADÁVAŤ V ROZHRANÍ!
+# -----------------------------------------------------------------------------
+# Ak nechceš nič nastavovať v Streamlit Secrets, môžeš svoj kľúč vložiť sem
+# medzi úvodzovky a Chatoš bude fungovať okamžite každému:
+HARDCODED_API_KEY = ""
+
+def get_gemini_api_key() -> str:
+    """Automaticky získa API kľúč bez nutnosti otravovať používateľa."""
+    # 1. Z hardcoded premennej v kóde (ak je zadaná)
+    if HARDCODED_API_KEY.strip():
+        return HARDCODED_API_KEY.strip()
+    
+    # 2. Zo systémových premenných prostredia
+    env_key = os.environ.get("GEMINI_API_KEY", "")
+    if env_key.strip():
+        return env_key.strip()
+    
+    # 3. Zo Streamlit Secrets (nastavenia na share.streamlit.io)
+    try:
+        if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
+            sec_key = st.secrets["GEMINI_API_KEY"]
+            if sec_key and sec_key.strip():
+                return sec_key.strip()
+    except Exception:
+        pass
+    
+    return ""
+
+api_key = get_gemini_api_key()
 
 # -----------------------------------------------------------------------------
 # 1. Konfigurácia Stránky Streamlit
@@ -278,12 +310,7 @@ if active_id not in st.session_state.conversations:
 current_conv = st.session_state.conversations[active_id]
 
 # -----------------------------------------------------------------------------
-# 5. Bezpečné Načítanie API Kľúča
-# -----------------------------------------------------------------------------
-api_key = os.environ.get("GEMINI_API_KEY") or (st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else "")
-
-# -----------------------------------------------------------------------------
-# 6. Pomocné Funkcie
+# 5. Pomocné Funkcie
 # -----------------------------------------------------------------------------
 def detect_canvas_artifact(text: str) -> Optional[Dict[str, str]]:
     html_match = re.search(r"```(?:html|htm)\s*([\s\S]*?)```", text, re.IGNORECASE)
@@ -337,7 +364,7 @@ def execute_gemini_stream(client: genai.Client, selected_model: str, api_content
     return None, None, "Kvóta API kľúča je prečerpaná (Chyba 429)."
 
 # -----------------------------------------------------------------------------
-# 7. Bočný Panel: Nástroje a Nastavenia
+# 6. Bočný Panel: Nástroje a Nastavenia (BEZ OTÁZOK NA API KĽÚČ)
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("""
@@ -347,7 +374,7 @@ with st.sidebar:
         </div>
         <div>
             <div style='font-size: 17px; font-weight: 800; color: #f8fafc; font-family: "Space Grotesk", sans-serif;'>CHATOŠ AI</div>
-            <div style='font-size: 10px; font-family: monospace; color: #38bdf8;'>SLOVENSKÝ ASISTENT &middot; PRO</div>
+            <div style='font-size: 10px; font-family: monospace; color: #38bdf8;'>VŽDY PRIPRAVENÝ &middot; PRO</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -372,7 +399,7 @@ with st.sidebar:
     st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
     available_models = {
-        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Najvyššia kvóta)",
+        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Najrýchlejší)",
         "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Najnovší)",
         "gemini-2.5-pro": "🧠 Gemini 2.5 Pro (Hĺbková logika)"
     }
@@ -431,20 +458,13 @@ with st.sidebar:
 
     st.markdown("---")
 
-    if not api_key:
-        new_key = st.text_input("🔑 Vlož svoj Gemini API kľúč:", type="password")
-        if new_key:
-            api_key = new_key
-            os.environ["GEMINI_API_KEY"] = new_key
-            st.success("Kľúč bol uložený!")
-            st.rerun()
-    else:
-        with st.expander("⚙️ Zmena API Kľúča"):
-            override_key = st.text_input("Nový kľúč:", type="password")
-            if st.button("Uložiť nový kľúč") and override_key:
-                os.environ["GEMINI_API_KEY"] = override_key
-                st.success("Nový API kľúč aktivovaný!")
-                st.rerun()
+    # Tiché zobrazenie stavu pripojenia (zelená bodka — Online)
+    st.markdown("""
+    <div style='display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #0c121e; border: 1px solid #1a263c; border-radius: 10px;'>
+        <div style='width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;'></div>
+        <span style='font-size: 12px; font-family: monospace; color: #94a3b8;'>Chatoš AI je online</span>
+    </div>
+    """, unsafe_allow_html=True)
 
     exp_col1, exp_col2 = st.columns(2)
     with exp_col1:
@@ -464,7 +484,7 @@ with st.sidebar:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 8. Horná Lišta
+# 7. Horná Lišta
 # -----------------------------------------------------------------------------
 header_left, header_right = st.columns([7, 3])
 with header_left:
@@ -488,13 +508,13 @@ with header_right:
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# 9. Rozvrhnutie Obrazovky
+# 8. Rozvrhnutie Obrazovky
 # -----------------------------------------------------------------------------
 is_split_view = st.session_state.show_canvas and st.session_state.active_artifact is not None
 chat_viewport, canvas_viewport = st.columns([6, 5]) if is_split_view else (st.container(), None)
 
 # -----------------------------------------------------------------------------
-# 10. Chat Zóna
+# 9. Chat Zóna
 # -----------------------------------------------------------------------------
 with chat_viewport:
     messages = current_conv.get("messages", [])
@@ -509,7 +529,7 @@ with chat_viewport:
                 Ahoj! Som <span style='background: linear-gradient(135deg, #38bdf8, #818cf8); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Chatoš AI</span>
             </h2>
             <p style='color: #94a3b8; font-size: 15px; max-width: 580px; margin: 0 auto 30px auto;'>
-                Som tvoj osobný inteligentný asistent. Pripravil som pre teba špičkové uvažovanie, programovanie s Canvasom a hľadanie na webe. S čím ti dnes pomôžem?
+                Som tvoj osobný inteligentný asistent. Som plne pripravený riešiť úlohy, písať kód so živým spustením v Canvase a hľadať informácie na webe. S čím ti dnes pomôžem?
             </p>
         </div>
         """, unsafe_allow_html=True)
@@ -568,7 +588,7 @@ with chat_viewport:
                 st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 11. Živý Canvas
+# 10. Živý Canvas
 # -----------------------------------------------------------------------------
 if is_split_view and canvas_viewport:
     with canvas_viewport:
@@ -603,14 +623,16 @@ if is_split_view and canvas_viewport:
             )
 
 # -----------------------------------------------------------------------------
-# 12. Spracovanie a Generovanie
+# 11. Spracovanie a Generovanie (Bez zadávania kľúča)
 # -----------------------------------------------------------------------------
 user_prompt_input = st.chat_input("Napíš Chatošovi čokoľvek, požiadaj o kód alebo analýzu...")
 active_prompt = user_prompt_input or st.session_state.pop("auto_prompt", None)
 
 if active_prompt:
-    if not api_key:
-        st.error("⚠️ Zadaj Gemini API kľúč v ľavom bočnom paneli.")
+    # Ak kľúč náhodou chýba v prostredí, jemne informujeme bez rozbitia dizajnu
+    current_key = get_gemini_api_key()
+    if not current_key:
+        st.warning("⚠️ Nebol nájdený žiadny API kľúč. Vlož ho do súboru do premennej `HARDCODED_API_KEY = 'tvoj_kluc'` alebo do Streamlit Secrets.")
         st.stop()
 
     saved_image_bytes = None
@@ -632,7 +654,7 @@ if active_prompt:
                 st.image(saved_image_bytes, width=260)
             st.markdown(active_prompt)
 
-    genai_client = genai.Client(api_key=api_key)
+    genai_client = genai.Client(api_key=current_key)
 
     with chat_viewport:
         with st.chat_message("assistant", avatar="🤖"):
@@ -704,8 +726,7 @@ if active_prompt:
                 🛑 **Chyba: {stream_error}**
                 
                 1. ⏳ **Počkaj 30–60 sekúnd** (minútový limit bezplatného API sa resetuje).
-                2. 🔑 Alebo vlož **nový API kľúč** z [Google AI Studio](https://aistudio.google.com/app/apikey) v bočnom paneli ("Zmena API Kľúča").
-                3. ⚡ V bočnom paneli zvoľ model **Gemini 2.5 Flash**.
+                2. ⚡ V bočnom paneli zvoľ model **Gemini 2.5 Flash** (má najvyššiu priepustnosť).
                 """)
                 if messages and messages[-1]["role"] == "user":
                     messages.pop()
