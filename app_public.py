@@ -25,15 +25,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Vlastné CSS pre čisti minimalistický vzhľad
+# Vlastné CSS pre kompletný svetlý vzhľad (vrátane tlačidiel a vstupov)
 st.markdown("""
     <style>
-    .stApp {
+    /* Hlavné pozadie aplikácie */
+    .stApp, [data-testid="stAppViewContainer"] {
         background-color: #f9f9fb !important;
         color: #0d0d0d !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
     }
 
+    /* Bočný panel */
     [data-testid="stSidebar"] {
         background-color: #f3f3f7 !important;
         border-right: 1px solid #e5e5e5 !important;
@@ -46,6 +48,56 @@ st.markdown("""
         padding-top: 1rem !important;
         padding-bottom: 5rem !important;
         max-width: 950px !important;
+    }
+
+    /* Všetky tlačidlá - biele pozadie, tmavý text, jemný rámik */
+    .stButton > button, div[data-testid="stFormSubmitButton"] > button {
+        background-color: #ffffff !important;
+        color: #1c1c1e !important;
+        border: 1px solid #e0e0e0 !important;
+        border-radius: 10px !important;
+        box-shadow: 0px 1px 3px rgba(0,0,0,0.05) !important;
+        transition: all 0.2s ease !important;
+    }
+    .stButton > button:hover {
+        background-color: #f0f0f4 !important;
+        border-color: #cbd5e1 !important;
+        color: #000000 !important;
+    }
+
+    /* Primárne tlačidlo (napr. Aktívny chat / Chat záložka) */
+    .stButton > button[kind="primary"] {
+        background-color: #ff4b4b !important;
+        color: #ffffff !important;
+        border: none !important;
+    }
+
+    /* Vstupné polia (text input, text area) */
+    div[data-baseweb="input"], div[data-baseweb="textarea"], input {
+        background-color: #ffffff !important;
+        color: #1c1c1e !important;
+        border-radius: 8px !important;
+        border: 1px solid #d1d5db !important;
+    }
+
+    /* Chat Input (spodné okno na zadávanie správ) */
+    div[data-testid="stChatInput"] {
+        background-color: #ffffff !important;
+        border: 1px solid #d1d5db !important;
+        border-radius: 14px !important;
+        box-shadow: 0px 2px 8px rgba(0,0,0,0.04) !important;
+    }
+    div[data-testid="stChatInput"] textarea {
+        color: #1c1c1e !important;
+        background-color: #ffffff !important;
+    }
+
+    /* Popover tlačidlá (ikona ➕ a tri bodky ⋮) */
+    div[data-testid="stPopover"] > button {
+        background-color: #ffffff !important;
+        border: 1px solid #d1d5db !important;
+        color: #1c1c1e !important;
+        border-radius: 8px !important;
     }
 
     .hero-title {
@@ -96,12 +148,6 @@ st.markdown("""
         justify-content: center;
         font-size: 0.85rem;
         font-weight: 600;
-    }
-
-    .settings-header {
-        font-size: 1.5rem;
-        font-weight: 600;
-        margin-bottom: 1rem;
     }
     </style>
 """, unsafe_allow_html=True)
