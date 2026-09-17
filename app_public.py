@@ -1,5 +1,5 @@
-# =============================================================================
-# CHATOŠ AI — Špičkový Slovenský Umelo-Inteligentný Asistent
+#=============================================================================
+# CH#ATOŠ AI — Špičkový Slovenský Umelo-Inteligentný Asistent
 # =============================================================================
 # Architektúra: Streamlit + Google Gemini API (google-genai SDK)
 # Jazyk a Persona: Slovenčina, Striktný Mužský rod ("urobil som", "pripravil som")
@@ -28,38 +28,7 @@ from google import genai
 from google.genai import types
 
 # -----------------------------------------------------------------------------
-# 0. Nastavenie API Kľúča — NEMUSÍŠ HO ZADÁVAŤ V ROZHRANÍ!
-# -----------------------------------------------------------------------------
-# Ak nechceš nič nastavovať v Streamlit Secrets, môžeš svoj kľúč vložiť sem
-# medzi úvodzovky a Chatoš bude fungovať okamžite každému:
-HARDCODED_API_KEY = ""
-
-def get_gemini_api_key() -> str:
-    """Automaticky získa API kľúč bez nutnosti otravovať používateľa."""
-    # 1. Z hardcoded premennej v kóde (ak je zadaná)
-    if HARDCODED_API_KEY.strip():
-        return HARDCODED_API_KEY.strip()
-    
-    # 2. Zo systémových premenných prostredia
-    env_key = os.environ.get("GEMINI_API_KEY", "")
-    if env_key.strip():
-        return env_key.strip()
-    
-    # 3. Zo Streamlit Secrets (nastavenia na share.streamlit.io)
-    try:
-        if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-            sec_key = st.secrets["GEMINI_API_KEY"]
-            if sec_key and sec_key.strip():
-                return sec_key.strip()
-    except Exception:
-        pass
-    
-    return ""
-
-api_key = get_gemini_api_key()
-
-# -----------------------------------------------------------------------------
-# 1. Konfigurácia Stránky Streamlit
+# 1. Konfigurácia Stránky Streamlit (musí byť prvá)
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Chatoš AI — Inteligentný Asistent",
@@ -67,6 +36,135 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# -----------------------------------------------------------------------------
+# 0. Inteligentná Detekcia API Kľúča — Všetky Názvy a Sekcie v Secrets
+# -----------------------------------------------------------------------------
+# Ak nechceš nič nastavovať v Streamlit Secrets, môžeš svoj kľúč vložiť sem:
+HARDCODED_API_KEY = ""
+
+def extract_key_from_obj(obj: Any, depth: int = 0) -> Optional[str]:
+    """Rekurzívne hľadá API kľúč v ľubovoľnom objekte (dict, secrets, list, str)."""
+    if obj is None or depth > 5:
+        return None
+        
+    # Ak je to priamo reťazec
+    if isinstance(obj, str):
+        cleaned = obj.strip().strip('"').strip("'")
+        if cleaned.startswith("AIza") and len(cleaned) >= 30:
+            return cleaned
+        return None
+
+    # Ak je to dict-like (st.secrets, AttrDict, dict)
+    if isinstance(obj, dict) or hasattr(obj, "items") or hasattr(obj, "keys"):
+        candidates = [
+            "gemini_api_key", "google_api_key", "gemini", "google",
+            "api_key", "apikey", "gemini_key", "google_key", "geminikey",
+            "googleapikey", "ai_key", "aistudio_key", "key", "gemini_secret"
+        ]
+        
+        try:
+            items = list(obj.items())
+        except Exception:
+            items = []
+
+        # 1. Krok: Presná alebo normalizovaná zhoda názvu kľúča
+        for k, v in items:
+            k_norm = str(k).lower().strip().replace("-", "_").replace(" ", "_")
+            if k_norm in candidates:
+                if isinstance(v, str):
+                    val = v.strip().strip('"').strip("'")
+                    if val and len(val) >= 20:
+                        return val
+                elif isinstance(v, (dict, list)) or hasattr(v, "items"):
+                    res = extract_key_from_obj(v, depth + 1)
+                    if res:
+                        return res
+
+        # 2. Krok: Názov kľúča obsahuje 'gemini' alebo 'google'
+        for k, v in items:
+            k_norm = str(k).lower()
+            if any(t in k_norm for t in ["gemini", "google", "apikey", "api_key"]):
+                if isinstance(v, str):
+                    val = v.strip().strip('"').strip("'")
+                    if val and len(val) >= 20:
+                        return val
+                elif isinstance(v, (dict, list)) or hasattr(v, "items"):
+                    res = extract_key_from_obj(v, depth + 1)
+                    if res:
+                        return res
+
+        # 3. Krok: Akákoľvek hodnota kdekoľvek začínajúca na AIza (štandardný formát Google kľúčov)
+        for k, v in items:
+            if isinstance(v, str):
+                val = v.strip().strip('"').strip("'")
+                if val.startswith("AIza") and len(val) >= 30:
+                    return val
+            elif isinstance(v, (dict, list)) or hasattr(v, "items"):
+                res = extract_key_from_obj(v, depth + 1)
+                if res:
+                    return res
+
+        # 4. Krok: Ak je len 1 hodnota a má dĺžku nad 25 znakov bez medzier
+        if len(items) == 1 and isinstance(items[0][1], str):
+            val = items[0][1].strip().strip('"').strip("'")
+            if len(val) >= 25 and " " not in val:
+                return val
+
+    # Ak je to zoznam
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            res = extract_key_from_obj(item, depth + 1)
+            if res:
+                return res
+
+    return None
+
+def inspect_secrets_structure() -> Dict[str, Any]:
+    """Zistí bezpečne aké kľúče a sekcie sa nachádzajú v st.secrets bez odhalenia tajomstiev."""
+    diagnostics = {
+        "has_secrets": False,
+        "keys_found": [],
+        "error": None
+    }
+    try:
+        if hasattr(st, "secrets"):
+            diagnostics["has_secrets"] = True
+            try:
+                for k in st.secrets.keys():
+                    diagnostics["keys_found"].append(str(k))
+            except Exception as e:
+                diagnostics["error"] = str(e)
+    except Exception as e:
+        diagnostics["error"] = str(e)
+    return diagnostics
+
+def get_gemini_api_key() -> str:
+    """Automaticky a spoľahlivo načíta Gemini API kľúč z akéhokoľvek zdroja."""
+    # 1. Zadaný v relácii (session state fallback)
+    if "session_api_key" in st.session_state and st.session_state["session_api_key"].strip():
+        return st.session_state["session_api_key"].strip()
+
+    # 2. Z hardcoded premennej v kóde (ak je vyplnená)
+    if HARDCODED_API_KEY.strip():
+        return HARDCODED_API_KEY.strip()
+    
+    # 3. Z premenných prostredia (rôzne aliasy)
+    for env_var in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "API_KEY", "GEMINI_KEY"]:
+        env_val = os.environ.get(env_var, "")
+        if env_val and env_val.strip():
+            return env_val.strip()
+    
+    # 4. Zo Streamlit Secrets (hĺbková kontrola všetkých sekcií a formátov)
+    try:
+        if hasattr(st, "secrets"):
+            found_sec = extract_key_from_obj(st.secrets)
+            if found_sec:
+                return found_sec
+    except Exception:
+        pass
+    
+    return ""
 
 # -----------------------------------------------------------------------------
 # 2. Prémiový Dizajn (Obsidian, Cyan & Indigo Cyber-Aesthetics)
@@ -458,13 +556,28 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Tiché zobrazenie stavu pripojenia (zelená bodka — Online)
-    st.markdown("""
-    <div style='display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #0c121e; border: 1px solid #1a263c; border-radius: 10px;'>
-        <div style='width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;'></div>
-        <span style='font-size: 12px; font-family: monospace; color: #94a3b8;'>Chatoš AI je online</span>
-    </div>
-    """, unsafe_allow_html=True)
+    # Zobrazenie stavu pripojenia API kľúča
+    current_key_check = get_gemini_api_key()
+    if current_key_check:
+        st.markdown("""
+        <div style='display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #0c121e; border: 1px solid #1a263c; border-radius: 10px;'>
+            <div style='width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px #10b981;'></div>
+            <span style='font-size: 12px; font-family: monospace; color: #38bdf8;'>Chatoš AI je pripojený</span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style='display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #1c1309; border: 1px solid #78350f; border-radius: 10px;'>
+            <div style='width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 8px #f59e0b;'></div>
+            <span style='font-size: 12px; font-family: monospace; color: #fbbf24;'>Kľúč nebol nájdený</span>
+        </div>
+        """, unsafe_allow_html=True)
+        with st.expander("🔑 Vložiť kľúč priamo tu", expanded=False):
+            manual_key_val = st.text_input("Zadaj Gemini API kľúč:", type="password", key="side_key_in", placeholder="AIzaSy...")
+            if st.button("Uložiť a aktivovať", key="btn_save_side_key", use_container_width=True):
+                if manual_key_val.strip():
+                    st.session_state["session_api_key"] = manual_key_val.strip()
+                    st.rerun()
 
     exp_col1, exp_col2 = st.columns(2)
     with exp_col1:
@@ -629,10 +742,50 @@ user_prompt_input = st.chat_input("Napíš Chatošovi čokoľvek, požiadaj o k�
 active_prompt = user_prompt_input or st.session_state.pop("auto_prompt", None)
 
 if active_prompt:
-    # Ak kľúč náhodou chýba v prostredí, jemne informujeme bez rozbitia dizajnu
+    # Ak kľúč náhodou chýba, poskytneme presnú diagnostiku a okamžitý fallback
     current_key = get_gemini_api_key()
     if not current_key:
-        st.warning("⚠️ Nebol nájdený žiadny API kľúč. Vlož ho do súboru do premennej `HARDCODED_API_KEY = 'tvoj_kluc'` alebo do Streamlit Secrets.")
+        diag = inspect_secrets_structure()
+        found_keys_list = diag.get("keys_found", [])
+        
+        with chat_viewport:
+            st.markdown(f"""
+            <div style='background: #161a26; border: 1px solid #28354f; border-radius: 16px; padding: 22px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);'>
+                <div style='display: flex; align-items: center; gap: 10px; margin-bottom: 8px;'>
+                    <span style='font-size: 24px;'>🔑</span>
+                    <span style='font-size: 17px; font-weight: 700; color: #38bdf8;'>Pripojenie Gemini API Kľúča</span>
+                </div>
+                <p style='color: #cbd5e1; font-size: 13.5px; margin-bottom: 12px; line-height: 1.6;'>
+                    Aplikácia automaticky prehľadala <code>st.secrets</code> aj systémové premenné, ale nenašla platný kľúč.
+                </p>
+                <div style='background: #090d16; border: 1px solid #1e293f; border-radius: 10px; padding: 12px 16px; font-family: monospace; font-size: 12.5px; color: #94a3b8; margin-bottom: 16px;'>
+                    <div style='color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 700; margin-bottom: 4px;'>Odporúčaný formát v Streamlit Secrets:</div>
+                    <code style='color: #38bdf8; font-size: 13px;'>GEMINI_API_KEY = "AIzaSy..."</code>
+                    <div style='margin-top: 8px; font-size: 11px; color: #64748b;'>
+                        Stav secrets: {f"Detegované položky: {found_keys_list}" if found_keys_list else "st.secrets je prázdne (ešte sa nenačítalo)"}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("##### ⚡ Alebo vlož kľúč sem a spusti chat okamžite (bez reštartu):")
+            c_input, c_btn = st.columns([4, 1])
+            with c_input:
+                temp_key = st.text_input(
+                    "Zadaj svoj Gemini API kľúč:",
+                    type="password",
+                    placeholder="AIzaSy...",
+                    key="temp_key_prompt",
+                    label_visibility="collapsed"
+                )
+            with c_btn:
+                if st.button("🚀 Spustiť", use_container_width=True, key="btn_activate_key_now"):
+                    if temp_key.strip():
+                        st.session_state["session_api_key"] = temp_key.strip()
+                        st.session_state["auto_prompt"] = active_prompt
+                        st.rerun()
+                    else:
+                        st.warning("Najprv vlož kľúč začínajúci na AIza...")
         st.stop()
 
     saved_image_bytes = None
