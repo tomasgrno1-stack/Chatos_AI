@@ -1,603 +1,568 @@
-import streamlit as st
-from google import genai
-from google.genai import types
-from PIL import Image
-import uuid
-import pypdf
-import docx
-import pandas as pd
-import requests
-import threading
-import time
-import json
-import io
-import os
-import datetime
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  loadConversations,
+  saveConversations,
+  loadActiveConvId,
+  saveActiveConvId,
+  loadSettings,
+  saveSettings,
+  createNewConversation,
+} from './utils/storage';
+import {
+  Conversation,
+  Message,
+  ModelMode,
+  CanvasArtifact,
+  UserSettings,
+  Attachment,
+} from './types';
+import { Header } from './components/Header';
+import { Sidebar } from './components/Sidebar';
+import { ChatMessage } from './components/ChatMessage';
+import { PromptInput } from './components/PromptInput';
+import { StarterCards } from './components/StarterCards';
+import { ArtifactCanvas } from './components/ArtifactCanvas';
+import { SettingsModal } from './components/SettingsModal';
 
-# ==============================================================================
-# 1. KONFIGURÁCIA STRÁNKY A ŠTÝLOV (KOMPLETNE SVETLÝ REŽIM)
-# ==============================================================================
+export default function App() {
+  const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations());
+  const [activeId, setActiveId] = useState<string | null>(() => {
+    const saved = loadActiveConvId();
+    return saved || null;
+  });
+  const [settings, setSettings] = useState<UserSettings>(() => loadSettings());
+  const [modelMode, setModelMode] = useState<ModelMode>('nova');
+  const [webSearch, setWebSearch] = useState<boolean>(settings.webSearchDefault);
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => window.innerWidth >= 1024);
+  const [activeArtifact, setActiveArtifact] = useState<CanvasArtifact | null>(null);
+  const [canvasOpen, setCanvasOpen] = useState<boolean>(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
 
-st.set_page_config(
-    page_title="Polaris AI (Public Version)",
-    page_icon="💬",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-# Vstreknutie CSS, ktoré natvrdo prepíše tmavý vzhľad Streamlitu
-st.markdown("""
-    <style>
-    /* Hlavné pozadie a písmo */
-    html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        background-color: #f9f9fb !important;
-        color: #0d0d0d !important;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+  // Auto-scroll to bottom of chat
+  const scrollToBottom = (smooth = true) => {
+    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
+  };
+
+  // Sync active conversation
+  const activeConversation = useMemo(() => {
+    return conversations.find((c) => c.id === activeId) || null;
+  }, [conversations, activeId]);
+
+  // Persist conversations
+  useEffect(() => {
+    saveConversations(conversations);
+  }, [conversations]);
+
+  // Persist active ID
+  useEffect(() => {
+    saveActiveConvId(activeId);
+  }, [activeId]);
+
+  // Keyboard shortcut listener (Cmd/Ctrl + N for new chat, Cmd/Ctrl + K to focus search)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+        e.preventDefault();
+        handleNewChat();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [modelMode]);
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    scrollToBottom(false);
+  }, [activeConversation?.messages.length]);
+
+  const handleNewChat = (mode: ModelMode = modelMode) => {
+    if (isGenerating && abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setIsGenerating(false);
+    }
+    const newConv = createNewConversation(mode);
+    setConversations((prev) => [newConv, ...prev]);
+    setActiveId(newConv.id);
+    setModelMode(mode);
+    setActiveArtifact(null);
+    setCanvasOpen(false);
+  };
+
+  const handleSelectConversation = (id: string) => {
+    setActiveId(id);
+    const conv = conversations.find((c) => c.id === id);
+    if (conv?.modelMode) {
+      setModelMode(conv.modelMode);
+    }
+  };
+
+  const handleDeleteConversation = (id: string) => {
+    setConversations((prev) => {
+      const updated = prev.filter((c) => c.id !== id);
+      if (activeId === id) {
+        const next = updated[0]?.id || null;
+        setActiveId(next);
+      }
+      return updated;
+    });
+  };
+
+  const handleRenameConversation = (id: string, newTitle: string) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, title: newTitle, updatedAt: Date.now() } : c))
+    );
+  };
+
+  const handleTogglePinConversation = (id: string) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, pinned: !c.pinned } : c))
+    );
+  };
+
+  const handleClearAllConversations = () => {
+    setConversations([]);
+    setActiveId(null);
+    setActiveArtifact(null);
+    setCanvasOpen(false);
+  };
+
+  const handleExportAll = () => {
+    const json = JSON.stringify(conversations, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `polaris-chats-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Trigger title generation for conversation
+  const generateTitle = async (convId: string, promptText: string) => {
+    try {
+      const res = await fetch('/api/title', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptText }),
+      });
+      const data = await res.json();
+      if (data.title) {
+        setConversations((prev) =>
+          prev.map((c) => (c.id === convId ? { ...c, title: data.title } : c))
+        );
+      }
+    } catch (e) {
+      console.error('Title generation failed', e);
+    }
+  };
+
+  // Inspect model response for code artifacts to automatically populate canvas
+  const detectArtifact = (fullText: string) => {
+    const htmlMatch = fullText.match(/```(?:html|htm)\s*([\s\S]*?)```/i);
+    if (htmlMatch && htmlMatch[1]) {
+      return {
+        id: 'art_' + Date.now(),
+        title: 'HTML & Web Preview',
+        language: 'html',
+        code: htmlMatch[1].trim(),
+        type: 'html' as const,
+      };
+    }
+    const svgMatch = fullText.match(/```(?:svg)\s*([\s\S]*?)```/i) || fullText.match(/(<svg[\s\S]*?<\/svg>)/i);
+    if (svgMatch && svgMatch[1]) {
+      return {
+        id: 'art_' + Date.now(),
+        title: 'Vector SVG Graphic',
+        language: 'svg',
+        code: svgMatch[1].trim(),
+        type: 'svg' as const,
+      };
+    }
+    return null;
+  };
+
+  // Send message
+  const handleSendMessage = async (
+    text: string,
+    attachments: Attachment[] = [],
+    customMode?: ModelMode,
+    customSearch?: boolean
+  ) => {
+    const effectiveMode = customMode || modelMode;
+    const effectiveSearch = customSearch !== undefined ? customSearch : webSearch;
+
+    let targetConv = activeConversation;
+
+    if (!targetConv) {
+      targetConv = createNewConversation(effectiveMode);
+      setConversations((prev) => [targetConv!, ...prev]);
+      setActiveId(targetConv.id);
     }
 
-    /* Bočný panel */
-    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
-        background-color: #f3f3f7 !important;
-        border-right: 1px solid #e5e5e5 !important;
+    const currentConvId = targetConv.id;
+
+    const userMessage: Message = {
+      id: 'msg_' + Date.now(),
+      role: 'user',
+      text,
+      timestamp: Date.now(),
+      attachments,
+    };
+
+    const assistantPlaceholderId = 'msg_' + (Date.now() + 1);
+    const assistantMessage: Message = {
+      id: assistantPlaceholderId,
+      role: 'assistant',
+      text: '',
+      timestamp: Date.now(),
+      isStreaming: true,
+    };
+
+    const updatedMessages = [...targetConv.messages, userMessage, assistantMessage];
+
+    // Update conversation with user message and placeholder
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === currentConvId
+          ? {
+              ...c,
+              messages: updatedMessages,
+              updatedAt: Date.now(),
+              modelMode: effectiveMode,
+            }
+          : c
+      )
+    );
+
+    // If first user message, trigger title generation
+    if (targetConv.messages.length === 0) {
+      generateTitle(currentConvId, text);
     }
 
-    #MainMenu, header, footer {visibility: hidden;}
-    
-    .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 5rem !important;
-        max-width: 950px !important;
-    }
+    // Set up SSE stream
+    setIsGenerating(true);
+    abortControllerRef.current = new AbortController();
 
-    /* Všetky tlačidlá - biele pozadie, tmavý text */
-    button, .stButton > button, div[data-testid="stFormSubmitButton"] > button {
-        background-color: #ffffff !important;
-        color: #1c1c1e !important;
-        border: 1px solid #d1d5db !important;
-        border-radius: 10px !important;
-        box-shadow: 0px 1px 3px rgba(0,0,0,0.05) !important;
-    }
-    button:hover, .stButton > button:hover {
-        background-color: #f1f5f9 !important;
-        border-color: #94a3b8 !important;
-        color: #000000 !important;
-    }
+    try {
+      // Send previous messages + new user message
+      const historyToSend = [...targetConv.messages, userMessage];
 
-    /* Primárne tlačidlo (aktívna záložka / aktívny chat) */
-    .stButton > button[kind="primary"] {
-        background-color: #ff4b4b !important;
-        color: #ffffff !important;
-        border: none !important;
-    }
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: abortControllerRef.current.signal,
+        body: JSON.stringify({
+          messages: historyToSend,
+          modelMode: effectiveMode,
+          webSearch: effectiveSearch,
+          customInstruction: settings.customInstruction,
+        }),
+      });
 
-    /* Textové vstupy */
-    div[data-baseweb="input"], input {
-        background-color: #ffffff !important;
-        color: #1c1c1e !important;
-        border-radius: 8px !important;
-        border: 1px solid #d1d5db !important;
-    }
+      if (!response.ok) {
+        throw new Error(`Server returned HTTP ${response.status}`);
+      }
 
-    /* Oprava Popover tlačidiel (ikona ➕ a tri bodky ⋮) */
-    div[data-testid="stPopover"] {
-        width: 100% !important;
-    }
-    div[data-testid="stPopover"] > button {
-        background-color: #ffffff !important;
-        border: 1px solid #d1d5db !important;
-        color: #1c1c1e !important;
-        border-radius: 10px !important;
-        height: 46px !important;
-        width: 100% !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        padding: 0px 8px !important;
-    }
-    div[data-testid="stPopover"] p {
-        font-size: 1.1rem !important;
-        color: #1c1c1e !important;
-    }
-    div[data-testid="stPopover"] svg {
-        fill: #1c1c1e !important;
-        color: #1c1c1e !important;
-    }
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedText = '';
+      let buffer = '';
 
-    /* Oprava okna Chat Input (pole na písanie) */
-    div[data-testid="stChatInput"] {
-        background-color: #ffffff !important;
-        border: 1px solid #d1d5db !important;
-        border-radius: 12px !important;
-        box-shadow: 0px 2px 6px rgba(0,0,0,0.04) !important;
-        padding: 4px !important;
-    }
-    div[data-testid="stChatInput"] > div {
-        background-color: #ffffff !important;
-    }
-    div[data-testid="stChatInput"] textarea {
-        color: #1c1c1e !important;
-        background-color: #ffffff !important;
-    }
-    div[data-testid="stChatInput"] textarea::placeholder {
-        color: #9ca3af !important;
-    }
-    div[data-testid="stChatInput"] button {
-        background-color: #f1f5f9 !important;
-        color: #1c1c1e !important;
-        border: 1px solid #cbd5e1 !important;
-        border-radius: 8px !important;
-    }
-    div[data-testid="stChatInput"] svg {
-        fill: #1c1c1e !important;
-    }
+      if (!reader) throw new Error('Failed to read stream');
 
-    .hero-title {
-        text-align: center;
-        font-size: 2.2rem;
-        font-weight: 600;
-        color: #0d0d0d;
-        margin-top: 8vh;
-        margin-bottom: 1.5rem;
-    }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-    .public-badge {
-        background-color: #e0f2fe;
-        color: #0369a1;
-        border-radius: 16px;
-        padding: 6px 14px;
-        font-size: 0.85rem;
-        font-weight: 600;
-        display: inline-flex;
-        align-items: center;
-    }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-    .sidebar-section-title {
-        font-size: 0.8rem;
-        color: #8e8e93;
-        padding: 12px 12px 4px 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
+        let currentEvent = 'message';
 
-    .anon-profile-card {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 6px;
-        border-radius: 8px;
-    }
-    
-    .avatar-circle-anon {
-        width: 34px;
-        height: 34px;
-        border-radius: 50%;
-        background-color: #64748b;
-        color: white;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.85rem;
-        font-weight: 600;
-    }
-    </style>
-""", unsafe_allow_html=True)
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            currentEvent = line.replace('event:', '').trim();
+          } else if (line.startsWith('data:')) {
+            const rawData = line.replace('data:', '').trim();
+            if (!rawData) continue;
 
-# ==============================================================================
-# 2. KEEP-ALIVE PINGER SERVICE
-# ==============================================================================
+            try {
+              const data = JSON.parse(rawData);
 
-APP_URL = "https://polaris-ai.streamlit.app"
-
-def keep_alive_worker():
-    while True:
-        time.sleep(240)
-        try:
-            requests.get(APP_URL, timeout=10)
-        except Exception:
-            pass
-
-if "pinger_started" not in st.session_state:
-    st.session_state.pinger_started = True
-    threading.Thread(target=keep_alive_worker, daemon=True).start()
-
-# ==============================================================================
-# 3. INITIALIZATION OF API CLIENT & MODELS
-# ==============================================================================
-
-if "GOOGLE_API_KEY" in st.secrets:
-    client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-else:
-    st.error("Chýba GOOGLE_API_KEY v st.secrets! Pridajte API kľúč do nastavení Streamlitu.")
-    st.stop()
-
-MODELE = {
-    "Gemini 2.5 Flash (Rýchly & Multimodálny)": "gemini-2.5-flash",
-    "Gemini 2.5 Pro (Pokročilá logika a kódovanie)": "gemini-2.5-pro",
-    "Gemini 1.5 Pro (Stabilný model)": "gemini-1.5-pro",
-    "Gemini 1.5 Flash (Ľahký model)": "gemini-1.5-flash"
-}
-
-ROLY = {
-    "Personal Assistant": """You are Polaris, an advanced AI assistant.
-CRITICAL MANDATE:
-Detect the exact language of the user's latest prompt and respond EXCLUSIVELY in that exact language (e.g. Slovak if Slovak, English if English, German if German). Never switch to another language.""",
-    
-    "Senior Software Engineer": """You are Polaris, a principal software architect and senior engineer.
-CRITICAL MANDATE:
-Detect and mirror the user's input language strictly.
-Provide high quality, production-ready code with concise technical explanations.""",
-    
-    "Concise Assistant": """You are Polaris.
-CRITICAL MANDATE:
-Respond strictly in the user's prompt language.
-Limit responses to a maximum of 2-3 sentences.""",
-
-    "Data Analyst": """You are Polaris, a data analytics expert.
-CRITICAL MANDATE:
-Detect and mirror the user's input language strictly.
-Analyze provided datasets, code snippets, or analytical queries accurately.""",
-
-    "Creative Writer": """You are Polaris, a creative writing expert.
-CRITICAL MANDATE:
-Detect and mirror the user's input language strictly.
-Generate expressive, fluid, and engaging prose."""
-}
-
-# ==============================================================================
-# 4. ANONYMOUS SESSION STATE INITIALIZATION
-# ==============================================================================
-
-def initialize_anon_session():
-    if "anon_user_id" not in st.session_state:
-        st.session_state.anon_user_id = f"guest_{str(uuid.uuid4())[:8]}"
-        
-    if "chats" not in st.session_state:
-        st.session_state.chats = {}
-    if "archived_chats" not in st.session_state:
-        st.session_state.archived_chats = {}
-    if "current_chat_id" not in st.session_state:
-        first_id = str(uuid.uuid4())
-        st.session_state.chats[first_id] = {
-            "title": "Nový konverzácia", 
-            "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "messages": []
+              if (currentEvent === 'chunk' && data.text) {
+                accumulatedText += data.text;
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== currentConvId) return c;
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === assistantPlaceholderId
+                          ? { ...m, text: accumulatedText, isStreaming: true }
+                          : m
+                      ),
+                    };
+                  })
+                );
+              } else if (currentEvent === 'grounding') {
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== currentConvId) return c;
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === assistantPlaceholderId
+                          ? {
+                              ...m,
+                              sources: data.sources || [],
+                              searchQueries: data.queries || [],
+                            }
+                          : m
+                      ),
+                    };
+                  })
+                );
+              } else if (currentEvent === 'error') {
+                accumulatedText += `\n\n**Error:** ${data.message || 'An error occurred'}`;
+                setConversations((prev) =>
+                  prev.map((c) => {
+                    if (c.id !== currentConvId) return c;
+                    return {
+                      ...c,
+                      messages: c.messages.map((m) =>
+                        m.id === assistantPlaceholderId
+                          ? { ...m, text: accumulatedText, isStreaming: false, error: data.message }
+                          : m
+                      ),
+                    };
+                  })
+                );
+              } else if (currentEvent === 'done') {
+                // Done event
+              }
+            } catch (err) {
+              console.error('Error parsing SSE data line', err);
+            }
+          }
         }
-        st.session_state.current_chat_id = first_id
-        
-    if "show_settings" not in st.session_state:
-        st.session_state.show_settings = False
-    if "settings_tab" not in st.session_state:
-        st.session_state.settings_tab = "Všeobecné"
-    if "top_tab" not in st.session_state:
-        st.session_state.top_tab = "Chat"
-    if "vybrana_rola" not in st.session_state:
-        st.session_state.vybrana_rola = "Personal Assistant"
-    if "vybrany_model" not in st.session_state:
-        st.session_state.vybrany_model = "Gemini 2.5 Flash (Rýchly & Multimodálny)"
-    if "enable_web_search" not in st.session_state:
-        st.session_state.enable_web_search = True
-    if "temperature" not in st.session_state:
-        st.session_state.temperature = 0.7
-    if "max_tokens" not in st.session_state:
-        st.session_state.max_tokens = 8192
-    if "system_prompt_custom" not in st.session_state:
-        st.session_state.system_prompt_custom = ""
-    if "search_query" not in st.session_state:
-        st.session_state.search_query = ""
+      }
 
-initialize_anon_session()
+      // Finalize message
+      setConversations((prev) =>
+        prev.map((c) => {
+          if (c.id !== currentConvId) return c;
+          return {
+            ...c,
+            messages: c.messages.map((m) =>
+              m.id === assistantPlaceholderId
+                ? { ...m, isStreaming: false }
+                : m
+            ),
+          };
+        })
+      );
 
-# ==============================================================================
-# 5. CHAT & DATA MANAGEMENT
-# ==============================================================================
-
-def vytvor_novy_chat():
-    nove_id = str(uuid.uuid4())
-    st.session_state.chats[nove_id] = {
-        "title": "Nový konverzácia", 
-        "created_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "messages": []
+      // Check if text has code artifact and set it
+      const artifact = detectArtifact(accumulatedText);
+      if (artifact) {
+        setActiveArtifact(artifact);
+        // If in architect mode, automatically open canvas for seamless experience
+        if (effectiveMode === 'architect') {
+          setCanvasOpen(true);
+        }
+      }
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        // User aborted intentionally
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id !== currentConvId) return c;
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === assistantPlaceholderId
+                  ? { ...m, isStreaming: false }
+                  : m
+              ),
+            };
+          })
+        );
+      } else {
+        console.error('Chat stream error:', err);
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id !== currentConvId) return c;
+            return {
+              ...c,
+              messages: c.messages.map((m) =>
+                m.id === assistantPlaceholderId
+                  ? {
+                      ...m,
+                      text: m.text ? m.text + '\n\n*(Generation interrupted)*' : 'Failed to connect to Polaris AI.',
+                      isStreaming: false,
+                    }
+                  : m
+              ),
+            };
+          })
+        );
+      }
+    } finally {
+      setIsGenerating(false);
+      abortControllerRef.current = null;
     }
-    st.session_state.current_chat_id = nove_id
+  };
 
-def archivuj_chat(chat_id):
-    if chat_id in st.session_state.chats:
-        st.session_state.archived_chats[chat_id] = st.session_state.chats[chat_id]
-        del st.session_state.chats[chat_id]
-        if st.session_state.current_chat_id == chat_id:
-            if st.session_state.chats:
-                st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
-            else:
-                vytvor_novy_chat()
+  const handleStopGenerating = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    setIsGenerating(false);
+  };
 
-def obnov_chat_z_archivu(chat_id):
-    if chat_id in st.session_state.archived_chats:
-        st.session_state.chats[chat_id] = st.session_state.archived_chats[chat_id]
-        del st.session_state.archived_chats[chat_id]
-        st.session_state.current_chat_id = chat_id
+  const handleRegenerateLast = () => {
+    if (!activeConversation || activeConversation.messages.length === 0) return;
+    const msgs = [...activeConversation.messages];
+    // Find last user message
+    let lastUserIndex = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') {
+        lastUserIndex = i;
+        break;
+      }
+    }
 
-def vymaz_chat(chat_id):
-    if chat_id in st.session_state.chats:
-        del st.session_state.chats[chat_id]
-        if st.session_state.current_chat_id == chat_id:
-            if st.session_state.chats:
-                st.session_state.current_chat_id = list(st.session_state.chats.keys())[0]
-            else:
-                vytvor_novy_chat()
+    if (lastUserIndex === -1) return;
 
-def exportuj_chat_json(chat_id):
-    if chat_id in st.session_state.chats:
-        return json.dumps(st.session_state.chats[chat_id], ensure_ascii=False, indent=2)
-    return ""
+    const userMsg = msgs[lastUserIndex];
+    // Trim conversation up to before this user message
+    const trimmed = msgs.slice(0, lastUserIndex);
 
-def exportuj_chat_markdown(chat_id):
-    if chat_id in st.session_state.chats:
-        chat_data = st.session_state.chats[chat_id]
-        md = f"# {chat_data['title']}\n*Vytvorené: {chat_data.get('created_at', 'N/A')}*\n\n---\n\n"
-        for m in chat_data["messages"]:
-            role = "Užívateľ" if m["role"] == "user" else "Asistent"
-            md += f"### {role}\n{m['content']}\n\n"
-        return md
-    return ""
+    setConversations((prev) =>
+      prev.map((c) => (c.id === activeId ? { ...c, messages: trimmed } : c))
+    );
 
-# ==============================================================================
-# 6. BOČNÝ PANEL (SIDEBAR)
-# ==============================================================================
+    handleSendMessage(userMsg.text, userMsg.attachments || []);
+  };
 
-with st.sidebar:
-    st.markdown("""
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; margin-bottom: 8px;">
-            <span style="font-weight: 600; font-size: 1.15rem; color: #1c1c1e;">Polaris AI ∨</span>
-        </div>
-    """, unsafe_allow_html=True)
+  const handleEditUserMessage = (editedText: string) => {
+    handleSendMessage(editedText);
+  };
 
-    if st.button("📝 Nový čet", key="btn_new_chat_anon", use_container_width=True):
-        vytvor_novy_chat()
-        st.session_state.show_settings = False
-        st.rerun()
+  const handleOpenArtifactInCanvas = (artifact: CanvasArtifact) => {
+    setActiveArtifact(artifact);
+    setCanvasOpen(true);
+  };
 
-    st.session_state.search_query = st.text_input("🔍 Hľadať v správach...", value=st.session_state.search_query, key="sidebar_search_anon")
+  const messages = activeConversation?.messages || [];
 
-    st.markdown("""
-        <div style="padding: 6px 10px; font-size: 0.9rem; color: #2d2d2d;">🖼️ Obrázky a dokumenty</div>
-        <div style="padding: 6px 10px; font-size: 0.9rem; color: #2d2d2d;">🌐 Vyhľadávanie na webe</div>
-        <div class="sidebar-section-title">História relácie</div>
-    """, unsafe_allow_html=True)
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-[#0c0f17] text-slate-100 font-sans">
+      {/* Sidebar */}
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        conversations={conversations}
+        activeId={activeId}
+        onSelectConversation={handleSelectConversation}
+        onNewChat={() => handleNewChat()}
+        onDeleteConversation={handleDeleteConversation}
+        onRenameConversation={handleRenameConversation}
+        onTogglePinConversation={handleTogglePinConversation}
+        onExportAll={handleExportAll}
+      />
 
-    filtered_chats = {}
-    for cid, cdata in st.session_state.chats.items():
-        if st.session_state.search_query.lower() in cdata["title"].lower():
-            filtered_chats[cid] = cdata
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col h-full min-w-0 relative">
+        {/* Header */}
+        <Header
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          modelMode={modelMode}
+          onSelectModelMode={(mode) => {
+            setModelMode(mode);
+            if (activeConversation) {
+              setConversations((prev) =>
+                prev.map((c) => (c.id === activeId ? { ...c, modelMode: mode } : c))
+              );
+            }
+          }}
+          hasArtifact={Boolean(activeArtifact)}
+          canvasOpen={canvasOpen}
+          onToggleCanvas={() => setCanvasOpen(!canvasOpen)}
+          onNewChat={() => handleNewChat()}
+          onOpenSettings={() => setSettingsModalOpen(true)}
+          webSearch={webSearch}
+        />
 
-    for chat_id, chat_data in list(filtered_chats.items()):
-        is_active = (chat_id == st.session_state.current_chat_id)
-        label = f"💬 {chat_data['title']}"
-        
-        col_btn, col_act = st.columns([0.78, 0.22], vertical_alignment="center")
-        with col_btn:
-            if st.button(label, key=f"select_{chat_id}", use_container_width=True, type="secondary" if not is_active else "primary"):
-                st.session_state.current_chat_id = chat_id
-                st.session_state.show_settings = False
-                st.rerun()
-        with col_act:
-            with st.popover("⋮"):
-                st.caption(f"Vytvorené: {chat_data.get('created_at', 'N/A')}")
-                nove_meno = st.text_input("Prejmenovať", value=chat_data["title"], key=f"rename_in_{chat_id}")
-                if st.button("Uložiť názov", key=f"save_name_{chat_id}"):
-                    st.session_state.chats[chat_id]["title"] = nove_meno
-                    st.rerun()
-                
-                st.divider()
-                if st.button("📦 Archivovať", key=f"arch_{chat_id}"):
-                    archivuj_chat(chat_id)
-                    st.rerun()
-                
-                if st.button("🗑 Vymazať", key=f"del_{chat_id}"):
-                    vymaz_chat(chat_id)
-                    st.rerun()
-
-    st.divider()
-
-    col_prof1, col_prof2 = st.columns([0.78, 0.22], vertical_alignment="center")
-    with col_prof1:
-        st.markdown(f"""
-            <div class="anon-profile-card">
-                <div class="avatar-circle-anon">G</div>
-                <div>
-                    <div style="font-weight: 600; font-size: 0.85rem; color: #1c1c1e;">Host / Anonym</div>
-                    <div style="font-size: 0.72rem; color: #64748b;">ID: {st.session_state.anon_user_id}</div>
+        {/* Chat / Canvas Split View Container */}
+        <div className="flex-1 flex overflow-hidden relative">
+          {/* Messages & Prompt Area */}
+          <div className="flex-1 flex flex-col h-full min-w-0 relative">
+            {messages.length === 0 ? (
+              <div className="flex-1 overflow-y-auto flex items-center justify-center">
+                <StarterCards
+                  onSelectPrompt={(prompt, mode, search) => {
+                    handleSendMessage(prompt, [], mode, search);
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800">
+                <div className="py-4">
+                  {messages.map((msg, idx) => (
+                    <ChatMessage
+                      key={msg.id}
+                      message={msg}
+                      isLast={idx === messages.length - 1}
+                      onRegenerate={handleRegenerateLast}
+                      onEditUserMessage={handleEditUserMessage}
+                      onOpenInCanvas={handleOpenArtifactInCanvas}
+                    />
+                  ))}
+                  <div ref={messagesEndRef} className="h-4" />
                 </div>
+              </div>
+            )}
+
+            {/* Floating Prompt Bar */}
+            <div className="shrink-0">
+              <PromptInput
+                onSend={handleSendMessage}
+                onStop={handleStopGenerating}
+                isGenerating={isGenerating}
+                webSearch={webSearch}
+                onToggleWebSearch={() => setWebSearch(!webSearch)}
+              />
             </div>
-        """, unsafe_allow_html=True)
-    with col_prof2:
-        if st.button("⚙️", key="open_settings_anon_btn", help="Nastavenia"):
-            st.session_state.show_settings = not st.session_state.show_settings
-            st.rerun()
+          </div>
 
-# ==============================================================================
-# 7. NASTAVENIA
-# ==============================================================================
+          {/* Interactive Artifact Canvas (Split Screen) */}
+          {canvasOpen && activeArtifact && (
+            <ArtifactCanvas
+              artifact={activeArtifact}
+              onClose={() => setCanvasOpen(false)}
+            />
+          )}
+        </div>
+      </div>
 
-if st.session_state.show_settings:
-    col_back, _ = st.columns([0.2, 0.8])
-    with col_back:
-        if st.button("← Späť do chatu", key="close_settings_anon"):
-            st.session_state.show_settings = False
-            st.rerun()
-
-    st.markdown("## ⚙️ Nastavenia Aplikácie")
-    st.divider()
-
-    col_set_nav, col_set_content = st.columns([0.30, 0.70])
-    
-    with col_set_nav:
-        st.markdown("**Konfigurácia AI**")
-        tabs_ai = ["Všeobecné", "Model & Engine", "Archivované čety"]
-        for t_item in tabs_ai:
-            if st.button(t_item, key=f"set_tab_{t_item}", use_container_width=True, type="primary" if st.session_state.settings_tab == t_item else "secondary"):
-                st.session_state.settings_tab = t_item
-                st.rerun()
-
-    with col_set_content:
-        st.markdown(f"### {st.session_state.settings_tab}")
-        
-        if st.session_state.settings_tab == "Všeobecné":
-            st.info("Aplikácia beží bez potreby registrácie alebo prihlásenia. Konverzácie sú uložené v relácii prehliadača.")
-
-        elif st.session_state.settings_tab == "Model & Engine":
-            st.session_state.vybrany_model = st.selectbox("Model:", list(MODELE.keys()), index=list(MODELE.keys()).index(st.session_state.vybrany_model))
-            st.session_state.enable_web_search = st.toggle("🌐 Google Search Grounding", value=st.session_state.enable_web_search)
-            st.session_state.vybrana_rola = st.selectbox("Rola:", list(ROLY.keys()), index=list(ROLY.keys()).index(st.session_state.vybrana_rola))
-            st.session_state.temperature = st.slider("Temperature:", 0.0, 1.0, st.session_state.temperature, 0.05)
-
-        elif st.session_state.settings_tab == "Archivované čety":
-            if not st.session_state.archived_chats:
-                st.info("Žiadne archivované čety.")
-            else:
-                for arch_id, arch_data in list(st.session_state.archived_chats.items()):
-                    col_a1, col_a2 = st.columns([0.7, 0.3])
-                    with col_a1:
-                        st.write(f"💬 **{arch_data['title']}**")
-                    with col_a2:
-                        if st.button("Obnoviť", key=f"rest_{arch_id}"):
-                            obnov_chat_z_archivu(arch_id)
-                            st.rerun()
-
-# ==============================================================================
-# 8. HLAVNÝ CHAT WORKSPACE
-# ==============================================================================
-
-else:
-    col_top1, col_top2, col_top3 = st.columns([0.25, 0.50, 0.25])
-    with col_top1:
-        st.markdown('<div class="public-badge">🌐 Public Access (No Login)</div>', unsafe_allow_html=True)
-    with col_top2:
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("💬 Chat", use_container_width=True, type="primary" if st.session_state.top_tab == "Chat" else "secondary"):
-                st.session_state.top_tab = "Chat"
-                st.rerun()
-        with c2:
-            if st.button("🛠️ IDE / Kódovanie", use_container_width=True, type="primary" if st.session_state.top_tab == "Work" else "secondary"):
-                st.session_state.top_tab = "Work"
-                st.rerun()
-
-    if st.session_state.top_tab == "Work":
-        st.markdown("### 🛠️ Kódovací editor pre hostí")
-        st.text_area("Kód Python:", value="print('Aplikácia beží bez prihlasovania!')", height=300)
-    else:
-        aktualny_chat = st.session_state.chats[st.session_state.current_chat_id]
-
-        if not aktualny_chat["messages"]:
-            st.markdown('<div class="hero-title">Môžeme začať, keď budeš chcieť.</div>', unsafe_allow_html=True)
-
-        if aktualny_chat["messages"]:
-            col_exp1, col_exp2, _ = st.columns([0.2, 0.2, 0.6])
-            with col_exp1:
-                st.download_button("📥 JSON", data=exportuj_chat_json(st.session_state.current_chat_id), file_name="chat.json", mime="application/json")
-            with col_exp2:
-                st.download_button("📝 Markdown", data=exportuj_chat_markdown(st.session_state.current_chat_id), file_name="chat.md", mime="text/markdown")
-
-        for msg in aktualny_chat["messages"]:
-            with st.chat_message(msg["role"]):
-                if "image" in msg and msg["image"] is not None:
-                    st.image(msg["image"], use_container_width=True)
-                if "file_info" in msg and msg["file_info"]:
-                    st.caption(f"📎 Príloha: **{msg['file_info']}**")
-                st.markdown(msg["content"])
-
-        # Vstupný panel s presným zarovnaním tlačidla ➕ a pisaacieho poľa
-        col_plus, col_in = st.columns([0.08, 0.92], vertical_alignment="center")
-        uploaded_file = None
-        
-        with col_plus:
-            with st.popover("➕"):
-                uploaded_file = st.file_uploader(
-                    "Príloha:",
-                    type=["png", "jpg", "jpeg", "mp3", "wav", "mp4", "txt", "pdf", "docx", "xlsx", "csv"],
-                    key=f"anon_up_{st.session_state.current_chat_id}"
-                )
-
-        with col_in:
-            prompt = st.chat_input("Názov alebo správu...")
-
-        if prompt:
-            if len(aktualny_chat["messages"]) == 0:
-                aktualny_chat["title"] = prompt[:25] + "..." if len(prompt) > 25 else prompt
-
-            sprava_pouzivatela = {"role": "user", "content": prompt}
-            parts_list = []
-
-            if uploaded_file is not None:
-                subor_typ = uploaded_file.type
-                nazov_suboru = uploaded_file.name
-                sprava_pouzivatela["file_info"] = nazov_suboru
-
-                if subor_typ in ["image/png", "image/jpeg", "image/jpg"]:
-                    img = Image.open(uploaded_file)
-                    parts_list.append(img)
-                    sprava_pouzivatela["image"] = img
-
-                elif subor_typ in ["audio/mp3", "audio/wav", "video/mp4"]:
-                    subor_bytes = uploaded_file.read()
-                    parts_list.append(types.Part.from_bytes(data=subor_bytes, mime_type=subor_typ))
-
-                elif subor_typ == "text/plain":
-                    parts_list.append(f"Text ({nazov_suboru}):\n{uploaded_file.read().decode('utf-8')}")
-
-                elif subor_typ == "application/pdf":
-                    try:
-                        pdf_reader = pypdf.PdfReader(uploaded_file)
-                        pdf_text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
-                        parts_list.append(f"PDF ({nazov_suboru}):\n{pdf_text}")
-                    except Exception as e:
-                        st.error(f"PDF Chyba: {e}")
-
-                elif nazov_suboru.endswith((".xlsx", ".xls", ".csv")):
-                    try:
-                        df = pd.read_csv(uploaded_file) if nazov_suboru.endswith(".csv") else pd.read_excel(uploaded_file)
-                        parts_list.append(f"Tabuľka ({nazov_suboru}):\n{df.to_markdown(index=False)}")
-                    except Exception as e:
-                        st.error(f"Tabuľka Chyba: {e}")
-
-            parts_list.append(prompt)
-            aktualny_chat["messages"].append(sprava_pouzivatela)
-
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                
-                with st.spinner("Generujem..."):
-                    tools_list = []
-                    if st.session_state.enable_web_search:
-                        tools_list.append(types.Tool(google_search=types.GoogleSearch()))
-
-                    config = types.GenerateContentConfig(
-                        system_instruction=ROLY[st.session_state.vybrana_rola],
-                        temperature=st.session_state.temperature,
-                        max_output_tokens=st.session_state.max_tokens,
-                        tools=tools_list
-                    )
-
-                    selected_model_id = MODELE[st.session_state.vybrany_model]
-
-                    try:
-                        response_stream = client.models.generate_content_stream(
-                            model=selected_model_id,
-                            contents=parts_list,
-                            config=config
-                        )
-
-                        plny_text = ""
-                        for chunk in response_stream:
-                            if chunk.text:
-                                plny_text += chunk.text
-                                message_placeholder.markdown(plny_text + "▌")
-
-                        message_placeholder.markdown(plny_text)
-                        aktualny_chat["messages"].append({"role": "assistant", "content": plny_text})
-
-                    except Exception as e:
-                        message_placeholder.error(f"Chyba API: {e}")
-
-            st.rerun()
+      {/* Settings Modal */}
+      <SettingsModal
+        open={settingsModalOpen}
+        onClose={() => setSettingsModalOpen(false)}
+        settings={settings}
+        onSaveSettings={(newSettings) => {
+          setSettings(newSettings);
+          saveSettings(newSettings);
+        }}
+        onClearAllConversations={handleClearAllConversations}
+      />
+    </div>
+  );
+}
