@@ -15,7 +15,7 @@ import os
 import datetime
 
 # ==============================================================================
-# 1. KONFIGURÁCIA STRÁNKY A ŠTÝLOV
+# 1. KONFIGURÁCIA STRÁNKY A ŠTÝLOV (KOMPLETNE SVETLÝ REŽIM)
 # ==============================================================================
 
 st.set_page_config(
@@ -25,21 +25,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Vlastné CSS pre kompletný svetlý vzhľad (vrátane tlačidiel a vstupov)
+# Vstreknutie CSS, ktoré natvrdo prepíše tmavý vzhľad Streamlitu
 st.markdown("""
     <style>
-    /* Hlavné pozadie aplikácie */
-    .stApp, [data-testid="stAppViewContainer"] {
+    /* Hlavné pozadie a písmo */
+    html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
         background-color: #f9f9fb !important;
         color: #0d0d0d !important;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
     }
 
     /* Bočný panel */
-    [data-testid="stSidebar"] {
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
         background-color: #f3f3f7 !important;
         border-right: 1px solid #e5e5e5 !important;
-        padding-top: 0.5rem;
     }
 
     #MainMenu, header, footer {visibility: hidden;}
@@ -50,54 +49,86 @@ st.markdown("""
         max-width: 950px !important;
     }
 
-    /* Všetky tlačidlá - biele pozadie, tmavý text, jemný rámik */
-    .stButton > button, div[data-testid="stFormSubmitButton"] > button {
+    /* Všetky tlačidlá - biele pozadie, tmavý text */
+    button, .stButton > button, div[data-testid="stFormSubmitButton"] > button {
         background-color: #ffffff !important;
         color: #1c1c1e !important;
-        border: 1px solid #e0e0e0 !important;
+        border: 1px solid #d1d5db !important;
         border-radius: 10px !important;
         box-shadow: 0px 1px 3px rgba(0,0,0,0.05) !important;
-        transition: all 0.2s ease !important;
     }
-    .stButton > button:hover {
-        background-color: #f0f0f4 !important;
-        border-color: #cbd5e1 !important;
+    button:hover, .stButton > button:hover {
+        background-color: #f1f5f9 !important;
+        border-color: #94a3b8 !important;
         color: #000000 !important;
     }
 
-    /* Primárne tlačidlo (napr. Aktívny chat / Chat záložka) */
+    /* Primárne tlačidlo (aktívna záložka / aktívny chat) */
     .stButton > button[kind="primary"] {
         background-color: #ff4b4b !important;
         color: #ffffff !important;
         border: none !important;
     }
 
-    /* Vstupné polia (text input, text area) */
-    div[data-baseweb="input"], div[data-baseweb="textarea"], input {
+    /* Textové vstupy */
+    div[data-baseweb="input"], input {
         background-color: #ffffff !important;
         color: #1c1c1e !important;
         border-radius: 8px !important;
         border: 1px solid #d1d5db !important;
     }
 
-    /* Chat Input (spodné okno na zadávanie správ) */
+    /* Oprava Popover tlačidiel (ikona ➕ a tri bodky ⋮) */
+    div[data-testid="stPopover"] {
+        width: 100% !important;
+    }
+    div[data-testid="stPopover"] > button {
+        background-color: #ffffff !important;
+        border: 1px solid #d1d5db !important;
+        color: #1c1c1e !important;
+        border-radius: 10px !important;
+        height: 46px !important;
+        width: 100% !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 0px 8px !important;
+    }
+    div[data-testid="stPopover"] p {
+        font-size: 1.1rem !important;
+        color: #1c1c1e !important;
+    }
+    div[data-testid="stPopover"] svg {
+        fill: #1c1c1e !important;
+        color: #1c1c1e !important;
+    }
+
+    /* Oprava okna Chat Input (pole na písanie) */
     div[data-testid="stChatInput"] {
         background-color: #ffffff !important;
         border: 1px solid #d1d5db !important;
-        border-radius: 14px !important;
-        box-shadow: 0px 2px 8px rgba(0,0,0,0.04) !important;
+        border-radius: 12px !important;
+        box-shadow: 0px 2px 6px rgba(0,0,0,0.04) !important;
+        padding: 4px !important;
+    }
+    div[data-testid="stChatInput"] > div {
+        background-color: #ffffff !important;
     }
     div[data-testid="stChatInput"] textarea {
         color: #1c1c1e !important;
         background-color: #ffffff !important;
     }
-
-    /* Popover tlačidlá (ikona ➕ a tri bodky ⋮) */
-    div[data-testid="stPopover"] > button {
-        background-color: #ffffff !important;
-        border: 1px solid #d1d5db !important;
+    div[data-testid="stChatInput"] textarea::placeholder {
+        color: #9ca3af !important;
+    }
+    div[data-testid="stChatInput"] button {
+        background-color: #f1f5f9 !important;
         color: #1c1c1e !important;
+        border: 1px solid #cbd5e1 !important;
         border-radius: 8px !important;
+    }
+    div[data-testid="stChatInput"] svg {
+        fill: #1c1c1e !important;
     }
 
     .hero-title {
@@ -159,7 +190,6 @@ st.markdown("""
 APP_URL = "https://polaris-ai.streamlit.app"
 
 def keep_alive_worker():
-    """Pozadový thread udržiavajúci aplikáciu v chode bez nutnosti prihlásenia."""
     while True:
         time.sleep(240)
         try:
@@ -215,11 +245,10 @@ Generate expressive, fluid, and engaging prose."""
 }
 
 # ==============================================================================
-# 4. ANONYMOUS SESSION STATE INITIALIZATION (BEZ PRIHLASOVANIA)
+# 4. ANONYMOUS SESSION STATE INITIALIZATION
 # ==============================================================================
 
 def initialize_anon_session():
-    # Automatické anonymné ID relácie pre každého návštevníka
     if "anon_user_id" not in st.session_state:
         st.session_state.anon_user_id = f"guest_{str(uuid.uuid4())[:8]}"
         
@@ -256,10 +285,6 @@ def initialize_anon_session():
         st.session_state.system_prompt_custom = ""
     if "search_query" not in st.session_state:
         st.session_state.search_query = ""
-    if "theme_mode" not in st.session_state:
-        st.session_state.theme_mode = "Svetlý"
-    if "default_workspace" not in st.session_state:
-        st.session_state.default_workspace = "Public Workspace"
 
 initialize_anon_session()
 
@@ -332,7 +357,6 @@ with st.sidebar:
         st.session_state.show_settings = False
         st.rerun()
 
-    # Vyhľadávanie v nedávnych konverzáciách
     st.session_state.search_query = st.text_input("🔍 Hľadať v správach...", value=st.session_state.search_query, key="sidebar_search_anon")
 
     st.markdown("""
@@ -341,7 +365,6 @@ with st.sidebar:
         <div class="sidebar-section-title">História relácie</div>
     """, unsafe_allow_html=True)
 
-    # Zobrazenie filtrirovaného zoznamu
     filtered_chats = {}
     for cid, cdata in st.session_state.chats.items():
         if st.session_state.search_query.lower() in cdata["title"].lower():
@@ -351,7 +374,7 @@ with st.sidebar:
         is_active = (chat_id == st.session_state.current_chat_id)
         label = f"💬 {chat_data['title']}"
         
-        col_btn, col_act = st.columns([0.80, 0.20])
+        col_btn, col_act = st.columns([0.78, 0.22], vertical_alignment="center")
         with col_btn:
             if st.button(label, key=f"select_{chat_id}", use_container_width=True, type="secondary" if not is_active else "primary"):
                 st.session_state.current_chat_id = chat_id
@@ -376,8 +399,7 @@ with st.sidebar:
 
     st.divider()
 
-    # Karta anonymného hostinského profilu bez loginu
-    col_prof1, col_prof2 = st.columns([0.82, 0.18])
+    col_prof1, col_prof2 = st.columns([0.78, 0.22], vertical_alignment="center")
     with col_prof1:
         st.markdown(f"""
             <div class="anon-profile-card">
@@ -394,7 +416,7 @@ with st.sidebar:
             st.rerun()
 
 # ==============================================================================
-# 7. NASTAVENIA (SETTINGS VIEW)
+# 7. NASTAVENIA
 # ==============================================================================
 
 if st.session_state.show_settings:
@@ -411,33 +433,25 @@ if st.session_state.show_settings:
     
     with col_set_nav:
         st.markdown("**Konfigurácia AI**")
-        tabs_ai = ["Všeobecné", "Model & Engine", "Vzhľad", "Archivované čety"]
+        tabs_ai = ["Všeobecné", "Model & Engine", "Archivované čety"]
         for t_item in tabs_ai:
             if st.button(t_item, key=f"set_tab_{t_item}", use_container_width=True, type="primary" if st.session_state.settings_tab == t_item else "secondary"):
                 st.session_state.settings_tab = t_item
                 st.rerun()
 
     with col_set_content:
-        st.markdown(f"<div class='settings-header'>{st.session_state.settings_tab}</div>", unsafe_allow_html=True)
+        st.markdown(f"### {st.session_state.settings_tab}")
         
         if st.session_state.settings_tab == "Všeobecné":
-            st.markdown("#### Verejný Režim")
-            st.info("Aplikácia beží bez potreby registrácie alebo prihlásenia. Konverzácie sú uložené lokálne vo vašom prehliadači.")
-            st.toggle("Uložiť históriu počas relácie", value=True)
+            st.info("Aplikácia beží bez potreby registrácie alebo prihlásenia. Konverzácie sú uložené v relácii prehliadača.")
 
         elif st.session_state.settings_tab == "Model & Engine":
-            st.markdown("#### Gemini API Engine")
             st.session_state.vybrany_model = st.selectbox("Model:", list(MODELE.keys()), index=list(MODELE.keys()).index(st.session_state.vybrany_model))
             st.session_state.enable_web_search = st.toggle("🌐 Google Search Grounding", value=st.session_state.enable_web_search)
             st.session_state.vybrana_rola = st.selectbox("Rola:", list(ROLY.keys()), index=list(ROLY.keys()).index(st.session_state.vybrana_rola))
             st.session_state.temperature = st.slider("Temperature:", 0.0, 1.0, st.session_state.temperature, 0.05)
 
-        elif st.session_state.settings_tab == "Vzhľad":
-            st.markdown("#### Téma rozhrania")
-            st.session_state.theme_mode = st.radio("Farebný režim:", ["Svetlý", "Tmavý"])
-
         elif st.session_state.settings_tab == "Archivované čety":
-            st.markdown("#### Archivované konverzácie")
             if not st.session_state.archived_chats:
                 st.info("Žiadne archivované čety.")
             else:
@@ -478,7 +492,6 @@ else:
         if not aktualny_chat["messages"]:
             st.markdown('<div class="hero-title">Môžeme začať, keď budeš chcieť.</div>', unsafe_allow_html=True)
 
-        # Exporty chatu
         if aktualny_chat["messages"]:
             col_exp1, col_exp2, _ = st.columns([0.2, 0.2, 0.6])
             with col_exp1:
@@ -486,7 +499,6 @@ else:
             with col_exp2:
                 st.download_button("📝 Markdown", data=exportuj_chat_markdown(st.session_state.current_chat_id), file_name="chat.md", mime="text/markdown")
 
-        # História správ
         for msg in aktualny_chat["messages"]:
             with st.chat_message(msg["role"]):
                 if "image" in msg and msg["image"] is not None:
@@ -495,9 +507,10 @@ else:
                     st.caption(f"📎 Príloha: **{msg['file_info']}**")
                 st.markdown(msg["content"])
 
-        # Vstupný panel
-        col_plus, col_in = st.columns([0.07, 0.93])
+        # Vstupný panel s presným zarovnaním tlačidla ➕ a pisaacieho poľa
+        col_plus, col_in = st.columns([0.08, 0.92], vertical_alignment="center")
         uploaded_file = None
+        
         with col_plus:
             with st.popover("➕"):
                 uploaded_file = st.file_uploader(
@@ -551,7 +564,6 @@ else:
             parts_list.append(prompt)
             aktualny_chat["messages"].append(sprava_pouzivatela)
 
-            # Odozva z Google Gemini 2.5 API
             with st.chat_message("assistant"):
                 message_placeholder = st.empty()
                 
@@ -589,7 +601,3 @@ else:
                         message_placeholder.error(f"Chyba API: {e}")
 
             st.rerun()
-
-# ==============================================================================
-# END OF PUBLIC APPLICATION (NO LOGIN)
-# ==============================================================================
