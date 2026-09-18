@@ -472,84 +472,77 @@ def generate_conversation_markdown(conv: Dict[str, Any]) -> str:
 
 def robust_stream_generator(api_keys: List[str], selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool):
     """
-    Robustný streamovací generátor.
-    Pri chybe 503 UNAVAILABLE (Google hlási: 'This model is currently experiencing high demand')
-    alebo 429 RESOURCE_EXHAUSTED automaticky:
-    1. Prepína medzi dostupnými API kľúčmi (pri kvóte 429).
-    2. Okamžite prepína na stabilný záložný model gemini-2.5-flash (pri preťažení 503).
+    Mimoriadne odolný streamovací generátor s automatickým opakovaním (retry),
+    striedaním viacerých kľúčov a záchranným prepínaním medzi stabilnými modelmi Gemini 2.5 Flash / 3.8 Flash / 2.5 Pro.
     """
-    models_sequence = [selected_model, "gemini-2.5-flash", "gemini-2.0-flash"]
-    seen = set()
-    models_to_try = [m for m in models_sequence if not (m in seen or seen.add(m))]
+    # Aktuálne oficiálne podporované modely Google Gemini API (vyradený zastaraný gemini-2.0-flash)
+    supported_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-pro"]
+    
+    # Zoradíme: najprv používateľom zvolený model, potom ostatné ako záchranné zálohy
+    models_to_try = [selected_model] + [m for m in supported_models if m != selected_model]
     tools = [{"google_search": {}}] if web_search_enabled else None
 
-    errors_logged = []
+    detailed_errors = []
 
     for model_idx, model_name in enumerate(models_to_try):
         for key_idx, key in enumerate(api_keys):
-            try:
-                client = genai.Client(api_key=key)
-                stream = client.models.generate_content_stream(
-                    model=model_name,
-                    contents=api_contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        tools=tools,
-                        temperature=0.7
-                    )
-                )
-
-                # Overíme, či model odpovedá (chyba 503 sa často vyvolá pri prvom chunku)
-                stream_iter = iter(stream)
+            # Pre každý kľúč skúsime až 2 pokusy (s krátkou 1.5s pauzou pri 503/429)
+            for attempt in range(2):
                 try:
-                    first_chunk = next(stream_iter)
-                except StopIteration:
-                    return
-                except Exception as chunk_exc:
-                    err_msg = str(chunk_exc)
-                    errors_logged.append(f"{model_name} (kľúč #{key_idx+1}): {err_msg}")
-                    err_lower = err_msg.lower()
+                    client = genai.Client(api_key=key)
+                    stream = client.models.generate_content_stream(
+                        model=model_name,
+                        contents=api_contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            tools=tools,
+                            temperature=0.7
+                        )
+                    )
 
-                    # 503 UNAVAILABLE: Model má vysoký dopyt na serveroch Google
-                    if "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
-                        # Preťaženie modelu je globálne na strane Google -> okamžite skúsime iný model
-                        break
-                    # 429 RESOURCE_EXHAUSTED: Kvóta kľúča
-                    elif "429" in err_lower or "resource_exhausted" in err_lower:
-                        # Skúsime ďalší API kľúč
-                        continue
-                    else:
-                        if key_idx < len(api_keys) - 1:
+                    # Overíme, či model odpovedá (chyba 503 sa často vyvolá pri prvom chunku)
+                    stream_iter = iter(stream)
+                    try:
+                        first_chunk = next(stream_iter)
+                    except StopIteration:
+                        return
+                    except Exception as chunk_exc:
+                        err_msg = str(chunk_exc)
+                        err_lower = err_msg.lower()
+                        detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}, pokus {attempt+1}): {err_msg}")
+
+                        if ("503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower or "429" in err_lower or "resource_exhausted" in err_lower) and attempt == 0:
+                            time.sleep(1.5)
                             continue
                         else:
                             break
 
-                # Ak sme úspešne získali prvý chunk:
-                fallback_note = None
-                if model_idx > 0 and model_name != selected_model:
-                    fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne preťažený (503 High Demand). Odpoveď bola automaticky a plynulo doručená cez záložný model `{model_name}`."
+                    # Úspech! Zostavíme prípadnú informačnú poznámku pre používateľa
+                    fallback_note = None
+                    if model_idx > 0 and model_name != selected_model:
+                        fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne preťažený. Odpoveď bola bleskovo a úspešne doručená cez záložný model `{model_name}`."
+                    elif key_idx > 0:
+                        fallback_note = f"ℹ️ Kľúč #1 dosiahol limit kvóty. Chatoš automaticky a úspešne pokračoval cez kľúč #{key_idx+1}."
 
-                yield ("chunk", first_chunk, model_name, fallback_note)
-                for chunk in stream_iter:
-                    yield ("chunk", chunk, model_name, None)
-                return
+                    yield ("chunk", first_chunk, model_name, fallback_note)
+                    for chunk in stream_iter:
+                        yield ("chunk", chunk, model_name, None)
+                    return
 
-            except Exception as conn_exc:
-                err_msg = str(conn_exc)
-                errors_logged.append(f"{model_name} (kľúč #{key_idx+1}): {err_msg}")
-                err_lower = err_msg.lower()
-                if "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
-                    break
-                elif "429" in err_lower or "resource_exhausted" in err_lower:
-                    continue
-                else:
-                    if key_idx < len(api_keys) - 1:
+                except Exception as conn_exc:
+                    err_msg = str(conn_exc)
+                    err_lower = err_msg.lower()
+                    detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}, pokus {attempt+1}): {err_msg}")
+
+                    if ("503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower or "429" in err_lower or "resource_exhausted" in err_lower) and attempt == 0:
+                        time.sleep(1.5)
                         continue
                     else:
                         break
 
-    last_err = errors_logged[-1] if errors_logged else "Neznáma chyba spojenia"
-    yield ("error", None, None, f"Všetky pokusy zlyhali ({len(models_to_try)} modely, {len(api_keys)} kľúče). Posledná hlásená chyba: {last_err}")
+    # Ak všetky pokusy zlyhali, vrátime ucelený diagnostický prehľad
+    errors_summary = "\n".join(detailed_errors[-4:]) if detailed_errors else "Neznáma chyba spojenia"
+    yield ("error", None, None, errors_summary)
 
 # -----------------------------------------------------------------------------
 # 6. Bočný Panel: Nástroje a Nastavenia (BEZ OTÁZOK NA API KĽÚČ)
@@ -1066,10 +1059,15 @@ if active_prompt:
                 elif event_type == "error":
                     response_placeholder.empty()
                     st.error(f"""
-                    🛑 **Chyba spojenia: {extra_info}**
+                    🛑 **Všetky pokusy o spojenie zlyhali:**
                     
-                    1. ⏳ **Google servery majú dočasný výpadok/preťaženie.** Počkaj pár sekúnd a pošli správu znova.
-                    2. ⚡ V bočnom paneli zvoľ model **Gemini 2.5 Flash** (má najvyššiu a najstabilnejšiu globálnu dostupnosť).
+                    {extra_info}
+                    
+                    ---
+                    💡 **Ako to hneď vyriešiť:**
+                    1. ⏳ **Dočasné preťaženie serverov Google (503):** Počkaj 5–10 sekúnd a odošli správu znova.
+                    2. ⚡ **Zmena modelu:** V bočnom paneli prepni model na **Gemini 2.5 Flash** (má najvyššiu priepustnosť a stabilitu).
+                    3. 🔑 **Dôležité info k viacerým API kľúčom:** Ak máš v Secrets viac kľúčov vytvorených v **rovnakom Google Cloud projekte**, zdieľajú rovnaký bezplatný limit (RPM). Aby mal každý kľúč samostatný plný limit, vytvor si nový projekt v [Google AI Studio](https://aistudio.google.com/) cez horné menu projektov.
                     """)
                     if messages and messages[-1]["role"] == "user":
                         messages.pop()
