@@ -369,7 +369,7 @@ if "active_conv_id" not in st.session_state:
         "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
         "messages": [],
         "mode": "nova",
-        "model": "gemini-3.8-flash",
+        "model": "gemini-3.6-flash",
         "web_search": False,
         "artifact": None
     }
@@ -395,7 +395,7 @@ if active_id not in st.session_state.conversations:
         "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
         "messages": [],
         "mode": "nova",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.6-flash",
         "web_search": False,
         "artifact": None
     }
@@ -451,7 +451,7 @@ def generate_conversation_markdown(conv: Dict[str, Any]) -> str:
     """Vygeneruje čistý, formátovaný Markdown dokument z celej konverzácie."""
     title = conv.get("title", "Konverzácia Chatoš AI")
     created = conv.get("created_at", "")
-    model = conv.get("model", "gemini-3.8-flash")
+    model = conv.get("model", "gemini-3.6-flash")
     mode = conv.get("mode", "nova")
 
     lines = [
@@ -478,7 +478,7 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
     - Pri vyčerpaní kvóty (429) okamžite bez oneskorenia prepína na ďalší dostupný kľúč.
     - Pri preťažení modelu (503) plynulo doručuje odpoveď cez záložný ultra-rýchly model.
     """
-    supported_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
+    supported_models = ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
     models_to_try = [selected_model] + [m for m in supported_models if m != selected_model]
     tools = [{"google_search": {}}] if web_search_enabled else None
 
@@ -547,6 +547,9 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
                             continue
                         else:
                             break
+                    # 404 = model zrušený / nedostupný
+                    elif "404" in err_lower or "not_found" in err_lower:
+                        break
                     else:
                         break
 
@@ -573,6 +576,8 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
                         continue
                     else:
                         break
+                elif "404" in err_lower or "not_found" in err_lower:
+                    break
                 else:
                     break
 
@@ -604,7 +609,7 @@ with st.sidebar:
             "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
             "messages": [],
             "mode": current_conv.get("mode", "nova"),
-            "model": current_conv.get("model", "gemini-2.5-flash"),
+            "model": current_conv.get("model", "gemini-3.6-flash"),
             "web_search": current_conv.get("web_search", False),
             "artifact": None
         }
@@ -617,14 +622,15 @@ with st.sidebar:
     st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
     available_models = {
-        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Ultra-rýchly & Stabilný — Odporúčaný)",
+        "gemini-3.6-flash": "⚡ Gemini 3.6 Flash (Ultra-rýchly & Stabilný — Odporúčaný)",
+        "gemini-3.1-flash-lite": "💡 Gemini 3.1 Flash-Lite (Vysoká dostupnosť)",
         "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Nový model)",
-        "gemini-3.1-pro-preview": "🧠 Gemini 3.1 Pro (Hĺbková logika & Kód)"
+        "gemini-3.1-pro-preview": "🧠 Gemini 3.1 Pro (Platený plán / Hĺbková logika)"
     }
     model_keys = list(available_models.keys())
-    saved_model = current_conv.get("model", "gemini-2.5-flash")
+    saved_model = current_conv.get("model", "gemini-3.6-flash")
     if saved_model not in model_keys:
-        saved_model = "gemini-2.5-flash"
+        saved_model = "gemini-3.6-flash"
         current_conv["model"] = saved_model
     default_model_idx = model_keys.index(saved_model)
     selected_model = st.selectbox(
@@ -779,7 +785,7 @@ with header_right:
     has_artifact = st.session_state.active_artifact is not None
     badge_col, toggle_col = st.columns([1, 1])
     with badge_col:
-        model_display = current_conv.get('model', 'gemini-3.8-flash').replace('gemini-', '').replace('-flash', '').upper()
+        model_display = current_conv.get('model', 'gemini-3.6-flash').replace('gemini-', '').replace('-flash', '').upper()
         st.markdown(f"""
         <div style='text-align: right; padding-top: 6px;'>
             <span style='background: #101626; border: 1px solid #1f2a40; color: #38bdf8; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-family: monospace;'>
