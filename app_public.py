@@ -395,7 +395,7 @@ if active_id not in st.session_state.conversations:
         "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
         "messages": [],
         "mode": "nova",
-        "model": "gemini-3.8-flash",
+        "model": "gemini-2.5-flash",
         "web_search": False,
         "artifact": None
     }
@@ -470,75 +470,111 @@ def generate_conversation_markdown(conv: Dict[str, Any]) -> str:
         lines.append("\n\n---\n")
     return "\n".join(lines)
 
-def robust_stream_generator(api_keys: List[str], selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool):
+def robust_stream_generator(api_keys: List[str], selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool, mode: str = "nova"):
     """
-    Mimoriadne odolný streamovací generátor s automatickým opakovaním (retry),
-    striedaním viacerých kľúčov a záchranným prepínaním medzi stabilnými modelmi Gemini 2.5 Flash / 3.8 Flash / 2.5 Pro.
+    Vysokorýchlostný a odolný streamovací generátor.
+    - Pri bežných režimoch (Nova, Architect, Scholar) nastavuje thinking_budget=0, vďaka čomu model začne písať do 0.3s.
+    - Pri režime Thinker ponecháva hĺbkové uvažovanie zapnuté.
+    - Pri vyčerpaní kvóty (429) okamžite bez oneskorenia prepína na ďalší dostupný kľúč.
+    - Pri preťažení modelu (503) plynulo doručuje odpoveď cez záložný ultra-rýchly model.
     """
-    # Aktuálne oficiálne podporované modely Google Gemini API
     supported_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
-    
-    # Zoradíme: najprv používateľom zvolený model, potom ostatné ako záchranné zálohy
     models_to_try = [selected_model] + [m for m in supported_models if m != selected_model]
     tools = [{"google_search": {}}] if web_search_enabled else None
+
+    # Nastavenie Thinking budget:
+    # 0 = blesková odozva (okamžité generovanie textu bez čakania na uvažovanie)
+    # -1 alebo zapnuté = hĺbkový režim Chatoš Thinker
+    thinking_cfg = None
+    if mode == "thinker":
+        try:
+            thinking_cfg = types.ThinkingConfig(thinking_budget=-1)
+        except Exception:
+            pass
+    else:
+        try:
+            thinking_cfg = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
 
     detailed_errors = []
 
     for model_idx, model_name in enumerate(models_to_try):
         for key_idx, key in enumerate(api_keys):
-            # Pre každý kľúč skúsime až 2 pokusy (s krátkou 1.5s pauzou pri 503/429)
-            for attempt in range(2):
+            try:
+                client = genai.Client(api_key=key)
+
+                # Zostavenie optimálnej konfigurácie
+                config_args = {
+                    "system_instruction": system_instruction,
+                    "tools": tools,
+                    "temperature": 0.7
+                }
+                if thinking_cfg is not None:
+                    config_args["thinking_config"] = thinking_cfg
+
                 try:
-                    client = genai.Client(api_key=key)
                     stream = client.models.generate_content_stream(
                         model=model_name,
                         contents=api_contents,
-                        config=types.GenerateContentConfig(
-                            system_instruction=system_instruction,
-                            tools=tools,
-                            temperature=0.7
-                        )
+                        config=types.GenerateContentConfig(**config_args)
+                    )
+                except Exception:
+                    # Ak daný model nepodporuje thinking_budget (napr. niektoré preview verzie), skúsime bez neho
+                    config_args.pop("thinking_config", None)
+                    stream = client.models.generate_content_stream(
+                        model=model_name,
+                        contents=api_contents,
+                        config=types.GenerateContentConfig(**config_args)
                     )
 
-                    # Overíme, či model odpovedá (chyba 503 sa často vyvolá pri prvom chunku)
-                    stream_iter = iter(stream)
-                    try:
-                        first_chunk = next(stream_iter)
-                    except StopIteration:
-                        return
-                    except Exception as chunk_exc:
-                        err_msg = str(chunk_exc)
-                        err_lower = err_msg.lower()
-                        detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}, pokus {attempt+1}): {err_msg}")
+                stream_iter = iter(stream)
+                try:
+                    first_chunk = next(stream_iter)
+                except StopIteration:
+                    return
+                except Exception as chunk_exc:
+                    err_msg = str(chunk_exc)
+                    err_lower = err_msg.lower()
+                    detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}): {err_msg}")
 
-                        if ("503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower or "429" in err_lower or "resource_exhausted" in err_lower) and attempt == 0:
-                            time.sleep(1.5)
+                    # 429 = okamžite skúsime ďalší API kľúč bez zbytočného spania
+                    if "429" in err_lower or "resource_exhausted" in err_lower:
+                        continue
+                    # 503 = preťaženie tohto modelu, skúsime ďalší kľúč alebo záložný model
+                    elif "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
+                        if key_idx < len(api_keys) - 1:
                             continue
                         else:
                             break
+                    else:
+                        break
 
-                    # Úspech! Zostavíme prípadnú informačnú poznámku pre používateľa
-                    fallback_note = None
-                    if model_idx > 0 and model_name != selected_model:
-                        fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne preťažený. Odpoveď bola bleskovo a úspešne doručená cez záložný model `{model_name}`."
-                    elif key_idx > 0:
-                        fallback_note = f"ℹ️ Kľúč #1 dosiahol limit kvóty. Chatoš automaticky a úspešne pokračoval cez kľúč #{key_idx+1}."
+                # Úspech! Zostavíme prípadnú informačnú poznámku pre používateľa
+                fallback_note = None
+                if model_idx > 0 and model_name != selected_model:
+                    fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne vyťažený. Odpoveď bola okamžite a úspešne doručená cez záložný bleskový model `{model_name}`."
+                elif key_idx > 0:
+                    fallback_note = f"ℹ️ Kľúč #1 dosiahol limit kvóty. Chatoš bleskovo a automaticky prepol na kľúč #{key_idx+1}."
 
-                    yield ("chunk", first_chunk, model_name, fallback_note)
-                    for chunk in stream_iter:
-                        yield ("chunk", chunk, model_name, None)
-                    return
+                yield ("chunk", first_chunk, model_name, fallback_note)
+                for chunk in stream_iter:
+                    yield ("chunk", chunk, model_name, None)
+                return
 
-                except Exception as conn_exc:
-                    err_msg = str(conn_exc)
-                    err_lower = err_msg.lower()
-                    detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}, pokus {attempt+1}): {err_msg}")
-
-                    if ("503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower or "429" in err_lower or "resource_exhausted" in err_lower) and attempt == 0:
-                        time.sleep(1.5)
+            except Exception as conn_exc:
+                err_msg = str(conn_exc)
+                err_lower = err_msg.lower()
+                detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}): {err_msg}")
+                if "429" in err_lower or "resource_exhausted" in err_lower:
+                    continue
+                elif "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
+                    if key_idx < len(api_keys) - 1:
                         continue
                     else:
                         break
+                else:
+                    break
 
     # Ak všetky pokusy zlyhali, vrátime ucelený diagnostický prehľad
     errors_summary = "\n".join(detailed_errors[-4:]) if detailed_errors else "Neznáma chyba spojenia"
@@ -568,7 +604,7 @@ with st.sidebar:
             "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
             "messages": [],
             "mode": current_conv.get("mode", "nova"),
-            "model": current_conv.get("model", "gemini-3.8-flash"),
+            "model": current_conv.get("model", "gemini-2.5-flash"),
             "web_search": current_conv.get("web_search", False),
             "artifact": None
         }
@@ -581,14 +617,14 @@ with st.sidebar:
     st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
     available_models = {
-        "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Predvolený & Najnovší)",
-        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Rýchly & Stabilný)",
+        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Ultra-rýchly & Stabilný — Odporúčaný)",
+        "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Nový model)",
         "gemini-3.1-pro-preview": "🧠 Gemini 3.1 Pro (Hĺbková logika & Kód)"
     }
     model_keys = list(available_models.keys())
-    saved_model = current_conv.get("model", "gemini-3.8-flash")
+    saved_model = current_conv.get("model", "gemini-2.5-flash")
     if saved_model not in model_keys:
-        saved_model = "gemini-3.8-flash"
+        saved_model = "gemini-2.5-flash"
         current_conv["model"] = saved_model
     default_model_idx = model_keys.index(saved_model)
     selected_model = st.selectbox(
@@ -1002,16 +1038,20 @@ if active_prompt:
             accumulated_response = ""
             grounded_sources = []
 
+            # Optimalizácia histórie pre okamžitú odozvu
+            recent_messages = messages[-14:] if len(messages) > 14 else messages
             formatted_contents = []
-            for msg_item in messages:
+            for idx, msg_item in enumerate(recent_messages):
                 raw_text = msg_item.get("content", "")
                 # Ignorujeme prerušené chybové hlásenia z predchádzajúcich pokusov
                 if "Generovanie prerušené:" in raw_text or "🛑 Chyba" in raw_text:
                     continue
                 parts = []
-                if msg_item.get("image_bytes"):
+                # Prílohy (obrázky a PDF) posielame len pri najnovších správach, aby sme neposielali megabajty pri každom dopyte
+                is_recent_turn = (idx >= len(recent_messages) - 2)
+                if is_recent_turn and msg_item.get("image_bytes"):
                     parts.append(types.Part.from_bytes(data=msg_item["image_bytes"], mime_type="image/png"))
-                if msg_item.get("pdf_bytes"):
+                if is_recent_turn and msg_item.get("pdf_bytes"):
                     parts.append(types.Part.from_bytes(data=msg_item["pdf_bytes"], mime_type="application/pdf"))
                 if raw_text:
                     parts.append(types.Part.from_text(text=raw_text))
@@ -1028,18 +1068,21 @@ if active_prompt:
                 user_memory_parts.append(f"Trvalé osobné inštrukcie a preferencie pre odpovede: {st.session_state.user_profile['custom_instructions']}.")
 
             memory_prompt = ("\n\nPOUŽÍVATEĽSKÝ PROFIL A PREFERENCIE: " + " ".join(user_memory_parts)) if user_memory_parts else ""
-            active_instruction = SYSTEM_PROMPTS.get(current_conv.get("mode", "nova"), SYSTEM_PROMPTS["nova"]) + memory_prompt
+            active_mode = current_conv.get("mode", "nova")
+            active_instruction = SYSTEM_PROMPTS.get(active_mode, SYSTEM_PROMPTS["nova"]) + memory_prompt
 
             generator = robust_stream_generator(
                 api_keys=all_available_keys,
                 selected_model=selected_model,
                 api_contents=formatted_contents,
                 system_instruction=active_instruction,
-                web_search_enabled=current_conv.get("web_search", False)
+                web_search_enabled=current_conv.get("web_search", False),
+                mode=active_mode
             )
 
             success = False
             active_fallback_notice = None
+            last_render_time = 0.0
 
             for event_type, chunk_data, used_model, extra_info in generator:
                 if event_type == "chunk":
@@ -1057,7 +1100,11 @@ if active_prompt:
 
                     if chunk.text:
                         accumulated_response += chunk.text
-                        response_placeholder.markdown(accumulated_response + " ▌")
+                        now = time.time()
+                        # Okamžitý render prvých znakov a následný optimalizovaný buffer pre plynulé písanie
+                        if now - last_render_time > 0.035 or len(accumulated_response) < 40:
+                            response_placeholder.markdown(accumulated_response + " ▌")
+                            last_render_time = now
 
                 elif event_type == "error":
                     response_placeholder.empty()
