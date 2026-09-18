@@ -475,8 +475,8 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
     Mimoriadne odolný streamovací generátor s automatickým opakovaním (retry),
     striedaním viacerých kľúčov a záchranným prepínaním medzi stabilnými modelmi Gemini 2.5 Flash / 3.8 Flash / 2.5 Pro.
     """
-    # Aktuálne oficiálne podporované modely Google Gemini API (vyradený zastaraný gemini-2.0-flash)
-    supported_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.5-pro"]
+    # Aktuálne oficiálne podporované modely Google Gemini API
+    supported_models = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
     
     # Zoradíme: najprv používateľom zvolený model, potom ostatné ako záchranné zálohy
     models_to_try = [selected_model] + [m for m in supported_models if m != selected_model]
@@ -582,12 +582,15 @@ with st.sidebar:
 
     available_models = {
         "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Predvolený & Najnovší)",
-        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Rýchly)",
-        "gemini-2.5-pro": "🧠 Gemini 2.5 Pro (Hĺbková logika)"
+        "gemini-2.5-flash": "⚡ Gemini 2.5 Flash (Rýchly & Stabilný)",
+        "gemini-3.1-pro-preview": "🧠 Gemini 3.1 Pro (Hĺbková logika & Kód)"
     }
     model_keys = list(available_models.keys())
     saved_model = current_conv.get("model", "gemini-3.8-flash")
-    default_model_idx = model_keys.index(saved_model) if saved_model in model_keys else 0
+    if saved_model not in model_keys:
+        saved_model = "gemini-3.8-flash"
+        current_conv["model"] = saved_model
+    default_model_idx = model_keys.index(saved_model)
     selected_model = st.selectbox(
         "Model Gemini:",
         options=model_keys,
