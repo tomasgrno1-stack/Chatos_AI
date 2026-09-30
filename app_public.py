@@ -40,7 +40,6 @@ st.set_page_config(
 # -----------------------------------------------------------------------------
 # 0. Inteligentná Detekcia a Rotácia Viacerých API Kľúčov zo Secrets
 # -----------------------------------------------------------------------------
-# Ak chceš kľúče vložiť priamo do kódu, môžeš sem zadať jeden alebo viac:
 HARDCODED_API_KEY = ""
 
 def extract_all_keys_from_obj(obj: Any, depth: int = 0) -> List[str]:
@@ -49,7 +48,6 @@ def extract_all_keys_from_obj(obj: Any, depth: int = 0) -> List[str]:
     if obj is None or depth > 6:
         return keys
 
-    # Ak je to priamo string (môže byť jeden kľúč alebo viacero oddelených čiarkou/novým riadkom)
     if isinstance(obj, str):
         parts = re.split(r'[,;\n\r\t]+', obj)
         for p in parts:
@@ -60,13 +58,11 @@ def extract_all_keys_from_obj(obj: Any, depth: int = 0) -> List[str]:
                 keys.append(cleaned)
         return keys
 
-    # Ak je to zoznam alebo tuple (napr. GEMINI_API_KEYS = ["AIza...", "AIza..."])
     if isinstance(obj, (list, tuple)):
         for item in obj:
             keys.extend(extract_all_keys_from_obj(item, depth + 1))
         return keys
 
-    # Ak je to dict-like (st.secrets, AttrDict, konfigurácie)
     if isinstance(obj, dict) or hasattr(obj, "items") or hasattr(obj, "keys"):
         try:
             items = list(obj.items())
@@ -75,7 +71,6 @@ def extract_all_keys_from_obj(obj: Any, depth: int = 0) -> List[str]:
 
         for k, v in items:
             k_lower = str(k).lower().strip()
-            # Ak hodnota je priamo string alebo štruktúra
             if isinstance(v, str):
                 parts = re.split(r'[,;\n\r\t]+', v)
                 for p in parts:
@@ -93,15 +88,12 @@ def get_all_gemini_api_keys() -> List[str]:
     """Automaticky získa všetky platné unikátne Gemini API kľúče z ľubovoľného zdroja."""
     collected = []
 
-    # 1. Zadané v relácii (session state)
     if "session_api_key" in st.session_state and st.session_state["session_api_key"].strip():
         collected.extend(extract_all_keys_from_obj(st.session_state["session_api_key"]))
 
-    # 2. Z hardcoded premennej v kóde
     if HARDCODED_API_KEY:
         collected.extend(extract_all_keys_from_obj(HARDCODED_API_KEY))
 
-    # 3. Zo systémových premenných prostredia
     for env_var in [
         "GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY", "API_KEYS", 
         "GEMINI_API_KEY_1", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"
@@ -110,14 +102,12 @@ def get_all_gemini_api_keys() -> List[str]:
         if env_val:
             collected.extend(extract_all_keys_from_obj(env_val))
 
-    # 4. Zo Streamlit Secrets (hĺbková detekcia zoznamov aj jednotlivých kľúčov)
     try:
         if hasattr(st, "secrets"):
             collected.extend(extract_all_keys_from_obj(st.secrets))
     except Exception:
         pass
 
-    # Odstránenie duplicít so zachovaním poradia
     unique_keys = []
     seen = set()
     for k in collected:
@@ -430,7 +420,6 @@ def clean_thought_tags(raw_text: str):
     return None, raw_text
 
 def generate_smart_title(user_text: str) -> str:
-    """Vytvorí výstižný, krátky 2-5 slovný názov konverzácie bez uvádzacích fráz."""
     clean = re.sub(
         r'^(ahoj|čau|prosím|vedel by si|chcel by som|chcem|povedz mi|vysvetli|napíš|sprav|vytvor|ukáž|ako|prečo|čo je|aký je)\s+',
         '',
@@ -448,7 +437,6 @@ def generate_smart_title(user_text: str) -> str:
     return smart[:32].capitalize() if smart else "Konverzácia"
 
 def generate_conversation_markdown(conv: Dict[str, Any]) -> str:
-    """Vygeneruje čistý, formátovaný Markdown dokument z celej konverzácie."""
     title = conv.get("title", "Konverzácia Chatoš AI")
     created = conv.get("created_at", "")
     model = conv.get("model", "gemini-3.6-flash")
@@ -471,20 +459,10 @@ def generate_conversation_markdown(conv: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 def robust_stream_generator(api_keys: List[str], selected_model: str, api_contents: list, system_instruction: str, web_search_enabled: bool, mode: str = "nova"):
-    """
-    Vysokorýchlostný a odolný streamovací generátor.
-    - Pri bežných režimoch (Nova, Architect, Scholar) nastavuje thinking_budget=0, vďaka čomu model začne písať do 0.3s.
-    - Pri režime Thinker ponecháva hĺbkové uvažovanie zapnuté.
-    - Pri vyčerpaní kvóty (429) okamžite bez oneskorenia prepína na ďalší dostupný kľúč.
-    - Pri preťažení modelu (503) plynulo doručuje odpoveď cez záložný ultra-rýchly model.
-    """
     supported_models = ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"]
     models_to_try = [selected_model] + [m for m in supported_models if m != selected_model]
     tools = [{"google_search": {}}] if web_search_enabled else None
 
-    # Nastavenie Thinking budget:
-    # 0 = blesková odozva (okamžité generovanie textu bez čakania na uvažovanie)
-    # -1 alebo zapnuté = hĺbkový režim Chatoš Thinker
     thinking_cfg = None
     if mode == "thinker":
         try:
@@ -504,7 +482,6 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
             try:
                 client = genai.Client(api_key=key)
 
-                # Zostavenie optimálnej konfigurácie
                 config_args = {
                     "system_instruction": system_instruction,
                     "tools": tools,
@@ -520,7 +497,6 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
                         config=types.GenerateContentConfig(**config_args)
                     )
                 except Exception:
-                    # Ak daný model nepodporuje thinking_budget (napr. niektoré preview verzie), skúsime bez neho
                     config_args.pop("thinking_config", None)
                     stream = client.models.generate_content_stream(
                         model=model_name,
@@ -538,27 +514,23 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
                     err_lower = err_msg.lower()
                     detailed_errors.append(f"• Model `{model_name}` (kľúč #{key_idx+1}): {err_msg}")
 
-                    # 429 = okamžite skúsime ďalší API kľúč bez zbytočného spania
                     if "429" in err_lower or "resource_exhausted" in err_lower:
                         continue
-                    # 503 = preťaženie tohto modelu, skúsime ďalší kľúč alebo záložný model
                     elif "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
                         if key_idx < len(api_keys) - 1:
                             continue
                         else:
                             break
-                    # 404 = model zrušený / nedostupný
                     elif "404" in err_lower or "not_found" in err_lower:
                         break
                     else:
                         break
 
-                # Úspech! Zostavíme prípadnú informačnú poznámku pre používateľa
                 fallback_note = None
                 if model_idx > 0 and model_name != selected_model:
-                    fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne vyťažený. Odpoveď bola okamžite a úspešne doručená cez záložný bleskový model `{model_name}`."
+                    fallback_note = f"ℹ️ Model `{selected_model}` bol na serveroch Google dočasne vyťažený. Odpoveď bola doručená cez záložný bleskový model `{model_name}`."
                 elif key_idx > 0:
-                    fallback_note = f"ℹ️ Kľúč #1 dosiahol limit kvóty. Chatoš bleskovo a automaticky prepol na kľúč #{key_idx+1}."
+                    fallback_note = f"ℹ️ Kľúč #1 dosiahol limit kvóty. Chatoš automaticky prepol na kľúč #{key_idx+1}."
 
                 yield ("chunk", first_chunk, model_name, fallback_note)
                 for chunk in stream_iter:
@@ -581,12 +553,11 @@ def robust_stream_generator(api_keys: List[str], selected_model: str, api_conten
                 else:
                     break
 
-    # Ak všetky pokusy zlyhali, vrátime ucelený diagnostický prehľad
     errors_summary = "\n".join(detailed_errors[-4:]) if detailed_errors else "Neznáma chyba spojenia"
     yield ("error", None, None, errors_summary)
 
 # -----------------------------------------------------------------------------
-# 6. Bočný Panel: Nástroje a Nastavenia (BEZ OTÁZOK NA API KĽÚČ)
+# 6. Bočný Panel: Nástroje a Nastavenia
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("""
@@ -622,7 +593,7 @@ with st.sidebar:
     st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
 
     available_models = {
-        "gemini-3.6-flash": "⚡ Gemini 3.6 Flash (Ultra-rýchly & Stabilný — Odporúčaný)",
+        "gemini-3.6-flash": "⚡ Gemini 3.6 Flash (Ultra-rýchly & Stabilný)",
         "gemini-3.1-flash-lite": "💡 Gemini 3.1 Flash-Lite (Vysoká dostupnosť)",
         "gemini-3.8-flash": "🚀 Gemini 3.8 Flash (Nový model)",
         "gemini-3.1-pro-preview": "🧠 Gemini 3.1 Pro (Platený plán / Hĺbková logika)"
@@ -659,10 +630,9 @@ with st.sidebar:
     current_conv["web_search"] = web_grounding
 
     with st.expander("🧠 Osobný profil a pamäť", expanded=False):
-        st.caption("Chatoš si tieto informácie zapamätá a prispôsobí im svoje odpovede vo všetkých četoch.")
         p_name = st.text_input("Tvoje meno:", value=st.session_state.user_profile.get("user_name", ""), placeholder="napr. Rado", key="prof_name_in")
-        p_role = st.text_input("Profesia / zameranie:", value=st.session_state.user_profile.get("user_role", ""), placeholder="napr. Python programátor, študent...", key="prof_role_in")
-        p_instr = st.text_area("Inštrukcie pre štýl odpovedí:", value=st.session_state.user_profile.get("custom_instructions", ""), placeholder="napr. Odpovedaj stručne a vecne, píš príklady kódu...", key="prof_instr_in", height=80)
+        p_role = st.text_input("Profesia / zameranie:", value=st.session_state.user_profile.get("user_role", ""), placeholder="napr. Python programátor...", key="prof_role_in")
+        p_instr = st.text_area("Inštrukcie pre štýl odpovedí:", value=st.session_state.user_profile.get("custom_instructions", ""), placeholder="napr. Odpovedaj stručne a vecne...", key="prof_instr_in", height=80)
         st.session_state.user_profile["user_name"] = p_name
         st.session_state.user_profile["user_role"] = p_role
         st.session_state.user_profile["custom_instructions"] = p_instr
@@ -689,9 +659,6 @@ with st.sidebar:
     else:
         filtered_ids = sorted_ids
 
-    if search_query.strip() and not filtered_ids:
-        st.caption("Žiadna konverzácia nezodpovedá hľadaniu.")
-
     for cid in filtered_ids:
         c_data = st.session_state.conversations[cid]
         is_current = (cid == active_id)
@@ -713,17 +680,10 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Zobrazenie stavu pripojenia API kľúča (s podporou viacerých kľúčov)
     all_keys_list = get_all_gemini_api_keys()
     if all_keys_list:
         k_count = len(all_keys_list)
-        if k_count == 1:
-            k_badge_text = "1 API kľúč aktívny"
-        elif k_count in [2, 3, 4]:
-            k_badge_text = f"{k_count} API kľúče (Auto-rotácia)"
-        else:
-            k_badge_text = f"{k_count} API kľúčov (Auto-rotácia)"
-
+        k_badge_text = f"{k_count} API kľúč{'e' if 1 < k_count < 5 else ('ov' if k_count >= 5 else '')} aktívny"
         st.markdown(f"""
         <div style='display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: #0c121e; border: 1px solid #1a263c; border-radius: 10px;'>
             <div style='display: flex; align-items: center; gap: 8px;'>
@@ -754,8 +714,7 @@ with st.sidebar:
             data=json.dumps(current_conv, indent=2, ensure_ascii=False),
             file_name=f"chatos_{active_id}.json",
             mime="application/json",
-            use_container_width=True,
-            help="Stiahnuť konverzáciu v JSON formáte"
+            use_container_width=True
         )
     with exp_col2:
         st.download_button(
@@ -763,11 +722,10 @@ with st.sidebar:
             data=generate_conversation_markdown(current_conv),
             file_name=f"chatos_{active_id}.md",
             mime="text/markdown",
-            use_container_width=True,
-            help="Stiahnuť ako čistý Markdown dokument"
+            use_container_width=True
         )
     with exp_col3:
-        if st.button("🧹 Zmazať", use_container_width=True, help="Vymazať správy aktuálneho četu"):
+        if st.button("🧹 Zmazať", use_container_width=True):
             current_conv["messages"] = []
             current_conv["artifact"] = None
             st.session_state.active_artifact = None
@@ -885,23 +843,22 @@ with chat_viewport:
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            # Panel rýchlych akcií pod odpoveďou asistenta
             if is_bot and content.strip() and not content.startswith("🛑"):
                 st.markdown("<div style='margin-top: 12px; margin-bottom: 4px;'></div>", unsafe_allow_html=True)
                 qa_c1, qa_c2, qa_c3, qa_c4 = st.columns([1.1, 1.1, 1.3, 1.4])
                 with qa_c1:
-                    if st.button("📋 Kopírovať", key=f"btn_copy_{idx}", help="Zobraziť čistý text na kopírovanie"):
+                    if st.button("📋 Kopírovať", key=f"btn_copy_{idx}"):
                         st.session_state[f"show_copy_{idx}"] = not st.session_state.get(f"show_copy_{idx}", False)
                 with qa_c2:
-                    if st.button("⚡ Zhrnúť", key=f"btn_sum_{idx}", help="Zhrnúť odpoveď do 3 kľúčových bodov"):
+                    if st.button("⚡ Zhrnúť", key=f"btn_sum_{idx}"):
                         st.session_state.auto_prompt = "Zhrň svoju predchádzajúcu odpoveď do 3 stručných a najdôležitejších bodov."
                         st.rerun()
                 with qa_c3:
-                    if st.button("💡 Zjednodušiť", key=f"btn_simp_{idx}", help="Vysvetliť jednoducho pre začiatočníka"):
+                    if st.button("💡 Zjednodušiť", key=f"btn_simp_{idx}"):
                         st.session_state.auto_prompt = "Vysvetli svoju predchádzajúcu odpoveď ešte jednoduchšie a priateľskejšie, ako pre úplného začiatočníka."
                         st.rerun()
                 with qa_c4:
-                    if st.button("❓ Minikvíz", key=f"btn_quiz_{idx}", help="3 otázky na overenie pochopenia"):
+                    if st.button("❓ Minikvíz", key=f"btn_quiz_{idx}"):
                         st.session_state.auto_prompt = "Priprav mi 3 krátke otázky alebo minikvíz k tomu, čo si práve vysvetlil, aby som si preveril vedomosti."
                         st.rerun()
 
@@ -944,56 +901,16 @@ if is_split_view and canvas_viewport:
             )
 
 # -----------------------------------------------------------------------------
-# 11. Spracovanie a Generovanie (Bez zadávania kľúča)
+# 11. Spracovanie a Generovanie
 # -----------------------------------------------------------------------------
 user_prompt_input = st.chat_input("Napíš Chatošovi čokoľvek, požiadaj o kód alebo analýzu...")
 active_prompt = user_prompt_input or st.session_state.pop("auto_prompt", None)
 
 if active_prompt:
-    # Ak kľúč náhodou chýba, poskytneme presnú diagnostiku a okamžitý fallback
     current_key = get_gemini_api_key()
     if not current_key:
-        diag = inspect_secrets_structure()
-        found_keys_list = diag.get("keys_found", [])
-        
         with chat_viewport:
-            st.markdown(f"""
-            <div style='background: #161a26; border: 1px solid #28354f; border-radius: 16px; padding: 22px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);'>
-                <div style='display: flex; align-items: center; gap: 10px; margin-bottom: 8px;'>
-                    <span style='font-size: 24px;'>🔑</span>
-                    <span style='font-size: 17px; font-weight: 700; color: #38bdf8;'>Pripojenie Gemini API Kľúča</span>
-                </div>
-                <p style='color: #cbd5e1; font-size: 13.5px; margin-bottom: 12px; line-height: 1.6;'>
-                    Aplikácia automaticky prehľadala <code>st.secrets</code> aj systémové premenné, ale nenašla platný kľúč.
-                </p>
-                <div style='background: #090d16; border: 1px solid #1e293f; border-radius: 10px; padding: 12px 16px; font-family: monospace; font-size: 12.5px; color: #94a3b8; margin-bottom: 16px;'>
-                    <div style='color: #64748b; font-size: 11px; text-transform: uppercase; font-weight: 700; margin-bottom: 4px;'>Odporúčaný formát v Streamlit Secrets:</div>
-                    <code style='color: #38bdf8; font-size: 13px;'>GEMINI_API_KEY = "AIzaSy..."</code>
-                    <div style='margin-top: 8px; font-size: 11px; color: #64748b;'>
-                        Stav secrets: {f"Detegované položky: {found_keys_list}" if found_keys_list else "st.secrets je prázdne (ešte sa nenačítalo)"}
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown("##### ⚡ Alebo vlož kľúč sem a spusti chat okamžite (bez reštartu):")
-            c_input, c_btn = st.columns([4, 1])
-            with c_input:
-                temp_key = st.text_input(
-                    "Zadaj svoj Gemini API kľúč:",
-                    type="password",
-                    placeholder="AIzaSy...",
-                    key="temp_key_prompt",
-                    label_visibility="collapsed"
-                )
-            with c_btn:
-                if st.button("🚀 Spustiť", use_container_width=True, key="btn_activate_key_now"):
-                    if temp_key.strip():
-                        st.session_state["session_api_key"] = temp_key.strip()
-                        st.session_state["auto_prompt"] = active_prompt
-                        st.rerun()
-                    else:
-                        st.warning("Najprv vlož kľúč začínajúci na AIza...")
+            st.warning("⚠️ Nebol nájdený platný Gemini API kľúč. Zadaj ho v bočnom paneli alebo v secrets.toml.")
         st.stop()
 
     saved_image_bytes = None
@@ -1022,7 +939,6 @@ if active_prompt:
         "file_name": saved_file_name
     })
 
-    # Inteligentný AI názov konverzácie
     if len(messages) <= 2 or current_conv.get("title", "") in ["Nová konverzácia", ""]:
         current_conv["title"] = generate_smart_title(active_prompt)
 
@@ -1044,16 +960,13 @@ if active_prompt:
             accumulated_response = ""
             grounded_sources = []
 
-            # Optimalizácia histórie pre okamžitú odozvu
             recent_messages = messages[-14:] if len(messages) > 14 else messages
             formatted_contents = []
             for idx, msg_item in enumerate(recent_messages):
                 raw_text = msg_item.get("content", "")
-                # Ignorujeme prerušené chybové hlásenia z predchádzajúcich pokusov
                 if "Generovanie prerušené:" in raw_text or "🛑 Chyba" in raw_text:
                     continue
                 parts = []
-                # Prílohy (obrázky a PDF) posielame len pri najnovších správach, aby sme neposielali megabajty pri každom dopyte
                 is_recent_turn = (idx >= len(recent_messages) - 2)
                 if is_recent_turn and msg_item.get("image_bytes"):
                     parts.append(types.Part.from_bytes(data=msg_item["image_bytes"], mime_type="image/png"))
@@ -1064,7 +977,6 @@ if active_prompt:
                 if parts:
                     formatted_contents.append(types.Content(role="model" if msg_item["role"] == "assistant" else "user", parts=parts))
 
-            # Zakomponovanie profilu a trvalej pamäte používateľa do systémových inštrukcií
             user_memory_parts = []
             if st.session_state.user_profile.get("user_name"):
                 user_memory_parts.append(f"Používateľ sa volá {st.session_state.user_profile['user_name']}.")
@@ -1107,7 +1019,6 @@ if active_prompt:
                     if chunk.text:
                         accumulated_response += chunk.text
                         now = time.time()
-                        # Okamžitý render prvých znakov a následný optimalizovaný buffer pre plynulé písanie
                         if now - last_render_time > 0.035 or len(accumulated_response) < 40:
                             response_placeholder.markdown(accumulated_response + " ▌")
                             last_render_time = now
@@ -1115,15 +1026,14 @@ if active_prompt:
                 elif event_type == "error":
                     response_placeholder.empty()
                     st.error(f"""
-                    🛑 **Všetky pokusy o spojenie zlyhali:**
+                    ⚠️ **Ospravedlňujem sa, systém narazil na drobnú chybu.**
                     
+                    Chatoš AI je momentálne stále vo fáze aktívneho vývoja a neustáleho ladenia.
+                    
+                    **Detaily:**  
                     {extra_info}
                     
-                    ---
-                    💡 **Ako to hneď vyriešiť:**
-                    1. ⏳ **Dočasné preťaženie serverov Google (503):** Počkaj 5–10 sekúnd a odošli správu znova.
-                    2. ⚡ **Zmena modelu:** V bočnom paneli prepni model na **Gemini 2.5 Flash** (má najvyššiu priepustnosť a stabilitu).
-                    3. 🔑 **Dôležité info k viacerým API kľúčom:** Ak máš v Secrets viac kľúčov vytvorených v **rovnakom Google Cloud projekte**, zdieľajú rovnaký bezplatný limit (RPM). Aby mal každý kľúč samostatný plný limit, vytvor si nový projekt v [Google AI Studio](https://aistudio.google.com/) cez horné menu projektov.
+                    Skús prosím otázku položiť znova o malú chvíľu.
                     """)
                     if messages and messages[-1]["role"] == "user":
                         messages.pop()
